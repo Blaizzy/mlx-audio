@@ -20,7 +20,8 @@ from mlx_audio.codec.models.mimi.modules import (
     SplitResidualVectorQuantizer as MimiSplitRVQ,
 )
 from mlx_audio.codec.models.mimi.modules import TransformerConfig
-from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.cache import KVCache, RotatingKVCache
 
 from .config import (
     Qwen3TTSTokenizerConfig,
@@ -376,9 +377,11 @@ class DecoderTransformer(nn.Module):
         self.input_proj = nn.Linear(config.latent_dim, config.hidden_size)
         self.output_proj = nn.Linear(config.hidden_size, config.latent_dim)
 
-    def make_cache(self) -> List[KVCache]:
+    def make_cache(self) -> List[RotatingKVCache]:
         """Create KV cache for all layers."""
-        return [KVCache() for _ in self.layers]
+        return [
+            RotatingKVCache(max_size=self.config.sliding_window) for _ in self.layers
+        ]
 
     def __call__(
         self,
@@ -398,10 +401,12 @@ class DecoderTransformer(nn.Module):
         position_embeddings = self.rotary_emb(x, position_ids)
 
         if mask is None and seq_len > 1:
-            total_len = offset + seq_len
-            mask = nn.MultiHeadAttention.create_additive_causal_mask(total_len)
-            mask = mask[-seq_len:]  # Only query positions need masking rows
-            mask = mask.astype(x.dtype)
+            mask = create_attention_mask(
+                x,
+                cache[0] if cache is not None else None,
+                window_size=self.config.sliding_window,
+                return_array=True,
+            )
 
         for i, layer in enumerate(self.layers):
             layer_cache = cache[i] if cache is not None else None
