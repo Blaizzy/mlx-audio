@@ -1,6 +1,6 @@
 # MLX-Audio
 
-[![Every voice task, one engine. Runs locally on your Mac. Install with pip install -U mlx-audio or try it in Nativ.](https://raw.githubusercontent.com/Blaizzy/mlx-audio/f3177d659faee6706f276ea5da6707875a1566e2/docs/assets/mlx-audio-banner.png)](https://runnativ.ai/)
+[![Every voice task, one engine. Runs locally on your Mac. Install with pip install -U mlx-audio or try it in Nativ.](https://raw.githubusercontent.com/Blaizzy/mlx-audio/70f6291ee79fcfe1a3cbfdde2ea6170bfa91339d/docs/assets/mlx-audio-banner.png)](https://runnativ.ai/)
 
 <p align="center">
   <strong>Run audio models on Apple Silicon.</strong> Text-to-speech, speech-to-text, speech-to-speech, and music generation. Built on MLX.
@@ -25,6 +25,10 @@
   <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/pypi/v/mlx-audio" alt="PyPI version"></a>
   <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+"></a>
   <a href="https://github.com/Blaizzy/mlx-audio/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Blaizzy/mlx-audio" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy/mlx-audio | Trendshift" width="250" height="55"></a>
 </p>
 
 ## Table of Contents
