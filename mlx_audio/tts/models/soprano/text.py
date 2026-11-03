@@ -187,6 +187,7 @@ _num_suffix_re = re.compile(r"\b\d+(K|M|B|T)\b", re.IGNORECASE)
 _comma_number_re = re.compile(r"(\d[\d,]+\d)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
+_decimal_number_re = re.compile(r"\d+\.\d+")
 _number_re = re.compile(r"\d+")
 
 
@@ -225,6 +226,10 @@ def _expand_dollars(m):
     return "zero dollars"
 
 
+def _expand_decimal_point(m):
+    return m.group(0).replace(".", " point ")
+
+
 def _expand_ordinal(m):
     num = int(re.sub(r"(st|nd|rd|th)$", "", m.group(0)))
     return _ordinal_to_words(num)
@@ -254,6 +259,7 @@ def normalize_numbers(text: str) -> str:
     text = re.sub(_num_suffix_re, _expand_num_suffix, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
     text = re.sub(_dollars_re, _expand_dollars, text)
+    text = re.sub(_decimal_number_re, _expand_decimal_point, text)
     text = re.sub(_ordinal_re, _expand_ordinal, text)
     text = re.sub(_number_re, _expand_number, text)
     return text
