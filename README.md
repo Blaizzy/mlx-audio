@@ -1,4 +1,4 @@
-# MLX-Audio
+<h1 align="center">MLX-Audio</h1>
 
 [![Every voice task, one engine. Runs locally on your Mac. Install with pip install -U mlx-audio or try it in Nativ.](https://raw.githubusercontent.com/Blaizzy/mlx-audio/70f6291ee79fcfe1a3cbfdde2ea6170bfa91339d/docs/assets/mlx-audio-banner.png)](https://runnativ.ai/)
 
