@@ -157,7 +157,7 @@ _TIME_RE = re.compile(
 )
 _MONEY_RE = re.compile(
     rf"(?<!\w)(?P<symbol>[$€£])\s*(?P<amount>{_NUMBER_PATTERN})"
-    r"(?:\s*(?P<quantity>k|K|m|M|b|B|bn|BN|thousand|million|billion|trillion))?"
+    r"(?:\s*(?P<quantity>thousand|million|billion|trillion|bn|BN|k|K|m|M|b|B)\b)?"
 )
 _PERCENT_RE = re.compile(rf"(?<!\w)(?P<number>{_NUMBER_PATTERN})\s*%")
 _UNIT_RE = re.compile(

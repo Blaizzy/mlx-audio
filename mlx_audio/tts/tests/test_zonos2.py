@@ -207,6 +207,33 @@ class TestZonos2TextNorm(unittest.TestCase):
             "and saved seven point five percent.",
         )
 
+    def test_currency_scale_words_are_fully_consumed(self):
+        normalizer = TTSTextNormalizer()
+        # Spelled-out magnitudes must be consumed whole; the quantity
+        # alternation previously matched the single-letter "m"/"b" prefix
+        # of "million"/"billion"/"bn", leaking the remainder into the output
+        # (e.g. "$5 million" -> "five million dollarsillion").
+        self.assertEqual(
+            normalizer.normalize("The deal is worth $5 million.", "en"),
+            "The deal is worth five million dollars.",
+        )
+        self.assertEqual(
+            normalizer.normalize("I paid $2 billion.", "en"),
+            "I paid two billion dollars.",
+        )
+        self.assertEqual(
+            normalizer.normalize("It cost $10 bn.", "en"),
+            "It cost ten billion dollars.",
+        )
+        # A trailing word that merely starts with a scale letter must not be
+        # eaten by the (now word-bounded) single-letter quantity suffix.
+        self.assertEqual(
+            normalizer.normalize("$5 mega", "en"),
+            "five dollars mega",
+        )
+        # Abbreviated suffixes glued to the amount still work.
+        self.assertEqual(normalizer.normalize("$5M", "en"), "five million dollars")
+
     def test_numeric_dates_ordinals_units_and_phone_numbers(self):
         normalizer = TTSTextNormalizer()
         self.assertEqual(
