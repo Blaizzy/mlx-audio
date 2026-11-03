@@ -114,7 +114,7 @@ docs = [
 "mlx_audio.sts.generate" = "mlx_audio.sts.generate:main"
 
 [project.urls]
-Homepage = "https://github.com/Blaizzy/mlx-audio"
+Homepage = "https://www.neywalabs.ai"
 Repository = "https://github.com/Blaizzy/mlx-audio"
 
 [tool.poetry]
