@@ -1,14 +1,31 @@
-
 # MLX-Audio
 
-<a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy%2Fmlx-audio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+[![Every voice task, one engine. Runs locally on your Mac. Install with pip install -U mlx-audio or try it in Nativ.](https://raw.githubusercontent.com/Blaizzy/mlx-audio/f3177d659faee6706f276ea5da6707875a1566e2/docs/assets/mlx-audio-banner.png)](https://runnativ.ai/)
 
-[![PyPI version](https://img.shields.io/pypi/v/mlx-audio.svg)](https://pypi.org/project/mlx-audio/)
-[![Python](https://img.shields.io/pypi/pyversions/mlx-audio.svg)](https://pypi.org/project/mlx-audio/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![GitHub stars](https://img.shields.io/github/stars/Blaizzy/mlx-audio.svg?style=social)](https://github.com/Blaizzy/mlx-audio)
+<p align="center">
+  <strong>Run audio models on Apple Silicon.</strong> Text-to-speech, speech-to-text, speech-to-speech, and music generation. Built on MLX.
+</p>
 
-The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), speech-to-speech (STS), music generation, and more on Apple Silicon.
+<p align="center">
+  <a href="#installation"><strong>Installation</strong></a> &middot;
+  <a href="https://blaizzy.github.io/mlx-audio/">Documentation</a> &middot;
+  <a href="https://github.com/Blaizzy/mlx-audio/releases">Releases</a>
+</p>
+
+<p align="center">
+  macOS &middot; Apple silicon
+</p>
+
+<p align="center">
+  Built by <a href="https://www.neywalabs.ai/">Neywa Labs</a>, the local AI company behind <a href="https://runnativ.ai/">Nativ</a>.
+</p>
+
+<p align="center">
+  <a href="https://github.com/Blaizzy/mlx-audio/actions/workflows/python-publish.yml"><img src="https://github.com/Blaizzy/mlx-audio/actions/workflows/python-publish.yml/badge.svg" alt="Upload Python Package"></a>
+  <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/pypi/v/mlx-audio" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/mlx-audio/"><img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+"></a>
+  <a href="https://github.com/Blaizzy/mlx-audio/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Blaizzy/mlx-audio" alt="MIT license"></a>
+</p>
 
 ## Table of Contents
 
@@ -41,7 +58,7 @@ The best audio processing library built on Apple's MLX framework, providing fast
 
 ### Using pip
 ```bash
-pip install mlx-audio
+pip install -U mlx-audio
 ```
 
 ### Using uv to install only the command line tools
