@@ -11,7 +11,7 @@ on:
 jobs:
   # Style checks run once
   style:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -32,7 +32,7 @@ jobs:
 
   # Core tests (DSP, utils)
   core:
-    runs-on: macos-14
+    runs-on: macos-latest
     needs: style
     steps:
       - uses: actions/checkout@v6
@@ -58,7 +58,7 @@ jobs:
 
   # Differential tests: vendored mlx_audio.lm vs upstream mlx-lm.
   parity:
-    runs-on: macos-14
+    runs-on: macos-latest
     needs: style
     steps:
       - uses: actions/checkout@v6
@@ -78,7 +78,7 @@ jobs:
   # Only verifies imports work with minimal deps installed.
   # Full tests run separately with all deps (test files import models that need extra deps).
   modular:
-    runs-on: macos-14
+    runs-on: macos-latest
     needs: style
     strategy:
       fail-fast: false
@@ -105,7 +105,7 @@ jobs:
 
   # Full test suites - need all deps
   tests:
-    runs-on: macos-14
+    runs-on: macos-latest
     needs: style
     strategy:
       fail-fast: false

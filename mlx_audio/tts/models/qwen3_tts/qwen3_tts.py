@@ -2310,6 +2310,14 @@ class Model(nn.Module):
             decoded_tokens = 0
             chunk_start_time = time.time()
             self.speech_tokenizer.decoder.reset_streaming_state()
+            # Prime the decoder with the tail of the reference codes so the
+            # first generated chunk is decoded with the same acoustic left
+            # context as the non-streaming path, which decodes
+            # ref_codes + generated codes together and trims the reference.
+            # The primed output is reference audio and is discarded.
+            if streaming_context_size > 0 and ref_codes.shape[2] > 0:
+                primer = ref_codes[:, :, -streaming_context_size:]
+                mx.eval(self.speech_tokenizer.decoder.streaming_step(primer))
 
         for step in range(effective_max_tokens):
             # Forward pass through talker

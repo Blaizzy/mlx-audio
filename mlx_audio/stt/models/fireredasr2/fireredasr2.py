@@ -556,7 +556,14 @@ class FireRedASR2(nn.Module):
         )
         return features
 
-    def generate(self, audio_or_path, beam_size: int = 3, **kwargs) -> STTOutput:
+    def generate(
+        self,
+        audio_or_path,
+        beam_size: int = 3,
+        chunk_duration: float = 30.0,
+        min_chunk_duration: float = 1.0,
+        **kwargs,
+    ) -> STTOutput:
         start_time = time.time()
 
         if isinstance(audio_or_path, (str, Path)):
@@ -566,6 +573,56 @@ class FireRedASR2(nn.Module):
         else:
             audio = audio_or_path
 
+        if audio.ndim != 1 or audio.shape[0] <= chunk_duration * 16000:
+            text, confidence, n_tokens = self._generate_single_chunk(
+                audio, beam_size, **kwargs
+            )
+            return STTOutput(
+                text=text,
+                segments=[{"text": text, "confidence": round(confidence, 3)}],
+                total_time=round(time.time() - start_time, 3),
+                generation_tokens=n_tokens,
+            )
+
+        from mlx_audio.stt.models.qwen3_asr.qwen3_asr import split_audio_into_chunks
+
+        if mx.abs(audio).max().item() <= 1.0:
+            audio = audio * 32768.0
+        chunks = split_audio_into_chunks(
+            np.array(audio),
+            16000,
+            chunk_duration=chunk_duration,
+            min_chunk_duration=min_chunk_duration,
+        )
+        total_duration = audio.shape[0] / 16000
+        chunk_end_times = [offset for _, offset in chunks[1:]] + [total_duration]
+        texts, segments, token_count = [], [], 0
+        for (chunk, offset), chunk_end in zip(chunks, chunk_end_times):
+            text, confidence, n_tokens = self._generate_single_chunk(
+                mx.array(chunk), beam_size, **kwargs
+            )
+            token_count += n_tokens
+            if text:
+                texts.append(text)
+                segments.append(
+                    {
+                        "text": text,
+                        "confidence": round(confidence, 3),
+                        "start": offset,
+                        "end": chunk_end,
+                    }
+                )
+            mx.clear_cache()
+        return STTOutput(
+            text=" ".join(texts),
+            segments=segments,
+            total_time=round(time.time() - start_time, 3),
+            generation_tokens=token_count,
+        )
+
+    def _generate_single_chunk(
+        self, audio, beam_size: int, **kwargs
+    ) -> Tuple[str, float, int]:
         features = self._extract_fbank(audio)
 
         if self._cmvn is not None:
@@ -606,14 +663,7 @@ class FireRedASR2(nn.Module):
             float(mx.mean(best_conf[: len(seq_list)]).item()) if seq_list else 0.0
         )
 
-        total_time = time.time() - start_time
-
-        return STTOutput(
-            text=text,
-            segments=[{"text": text, "confidence": round(confidence, 3)}],
-            total_time=round(total_time, 3),
-            generation_tokens=len(seq_list),
-        )
+        return text, confidence, len(seq_list)
 
     def sanitize(self, weights: dict) -> dict:
         new_weights = {}

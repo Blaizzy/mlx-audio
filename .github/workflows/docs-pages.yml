@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     env:
       SITE_URL: https://blaizzy.github.io/mlx-audio/
     steps:

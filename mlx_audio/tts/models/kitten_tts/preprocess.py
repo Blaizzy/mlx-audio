@@ -211,8 +211,12 @@ _RE_PERCENT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*%")
 # Currency: $100, €1,200.50, £50, $85K, $2.5M (optional scale suffix)
 _RE_CURRENCY = re.compile(r"([$€£¥₹₩₿])\s*([\d,]+(?:\.\d+)?)\s*([KMBT])?(?![a-zA-Z\d])")
 
-# Time: 3:30pm, 14:00, 3:30 AM — requires 2-digit minutes so "3:0" (score) doesn't match
-_RE_TIME = re.compile(r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\b", re.IGNORECASE)
+# Time: 3:30pm, 14:00, 3:30 AM — requires 2-digit minutes so "3:0" (score) doesn't match.
+# Whitespace before am/pm is only consumed when am/pm is present, so a bare time
+# followed by a word ("3:30 tomorrow") keeps the separating space.
+_RE_TIME = re.compile(
+    r"\b(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s*(am|pm))?\b", re.IGNORECASE
+)
 
 # Ranges: 10-20, 100-200 (both sides numeric, hyphen between them)
 _RE_RANGE = re.compile(r"(?<!\w)(\d+)-(\d+)(?!\w)")
@@ -344,8 +348,13 @@ def expand_currency(text: str) -> str:
         if "." in raw:
             int_part, dec_part = raw.split(".", 1)
             dec_val = int(dec_part[:2].ljust(2, "0"))
-            int_words = number_to_words(int(int_part))
-            result = f"{int_words} {unit}s" if unit else int_words
+            int_val = int(int_part)
+            int_words = number_to_words(int_val)
+            result = (
+                f"{int_words} {unit}{'s' if int_val != 1 else ''}"
+                if unit
+                else int_words
+            )
             if dec_val:
                 cents = number_to_words(dec_val)
                 result += f" and {cents} cent{'s' if dec_val != 1 else ''}"

@@ -22,12 +22,14 @@ MODEL_REMAPPING = {
     "lfm_audio": "lfm_audio",
     "lfm2_audio": "lfm_audio",
     "lfm2.5": "lfm_audio",
+    "lfm3_audio": "lfm3_audio",
     "moshi": "moshi",
     "moshiko": "moshi",
     "mimo_audio": "mimo_audio",
     "mossformer2": "mossformer2_se",
     "mossformer2_se": "mossformer2_se",
     "nemotron_voicechat": "nemotron_voicechat",
+    "nemotron_reuse": "nemotron_reuse",
     "sam_audio": "sam_audio",
     "samaudio": "sam_audio",
 }
@@ -159,11 +161,13 @@ def load_model(
         "ming_v3_audio",
         "dialogue_sidon",
         "lfm_audio",
+        "lfm3_audio",
         "mimo_audio",
         "mossformer2_se",
         "deepfilternet",
         "sam_audio",
         "nemotron_voicechat",
+        "nemotron_reuse",
     }:
         resolved_model_path = model_path
         if model_type == "deepfilternet":

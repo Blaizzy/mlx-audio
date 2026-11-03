@@ -434,6 +434,13 @@ class Model(nn.Module):
     def model_quant_predicate(cls, path: str, module: nn.Module) -> bool:
         return not isinstance(module, nn.Embedding) and "fast_" not in path
 
+    @classmethod
+    def model_load_quant_predicate(cls, path: str, module: nn.Module) -> bool:
+        # Published checkpoints can also quantize embeddings and fast_* layers.
+        # Let apply_quantization reconstruct their layout from the stored scales
+        # and per-layer settings without changing the policy for new conversions.
+        return True
+
     def load_weights(self, weights, strict: bool = True):
         remapped = []
         for key, value in weights:

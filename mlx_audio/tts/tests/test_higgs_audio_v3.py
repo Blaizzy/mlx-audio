@@ -1,8 +1,12 @@
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.tts.models.higgs_audio_v3.config import (
     HiggsAudioV3Config,
@@ -438,6 +442,39 @@ class TestHiggsAudioV3Model(unittest.TestCase):
             [result.samples for result in serial],
         )
 
+    def test_shared_reference_prefill_matches_per_row_prefill(self):
+        model = Model(_tiny_config())
+        model._prompt_builder = HiggsAudioV3PromptBuilder(FakeTokenizer())
+        model._codec = FakeCodec()
+        mx.eval(model.parameters())
+
+        references = model._normalize_references(
+            ref_audio_codes=mx.ones((4, 4), dtype=mx.int32),
+            ref_text="Reference transcript.",
+        )
+        texts = [
+            "short",
+            "this is a much longer text input for the second batch item",
+            "middle length text",
+        ]
+
+        cache, last_hidden = model._prefill_batch(texts, [references] * len(texts))
+
+        for index, text in enumerate(texts):
+            row_cache, row_hidden = model._prefill_padded([text], [references])
+            np.testing.assert_allclose(
+                np.array(last_hidden[index]), np.array(row_hidden[0]), atol=1e-5
+            )
+            for layer_cache, row_layer_cache in zip(cache, row_cache):
+                np.testing.assert_allclose(
+                    np.array(layer_cache.extract(index).keys),
+                    np.array(row_layer_cache.extract(0).keys),
+                    atol=1e-5,
+                )
+                self.assertEqual(
+                    int(layer_cache.offset[index]), int(row_layer_cache.offset[0])
+                )
+
     def test_batch_generate_rejects_streaming(self):
         model = Model(_tiny_config())
 
@@ -496,6 +533,79 @@ class TestHiggsAudioV3Model(unittest.TestCase):
         events = sorted(events, key=lambda event: event.sequence_id)
         self.assertEqual([event.sequence_id for event in events], [0, 1])
         self.assertTrue(all(event.done for event in events))
+        self.assertEqual(
+            [event.token_count for event in events],
+            [result.token_count for result in serial],
+        )
+        self.assertEqual(
+            [event.samples for event in events],
+            [result.samples for result in serial],
+        )
+
+    def test_continuous_batch_session_shares_prefix_for_equal_reference_paths(self):
+        model = Model(_tiny_config())
+        model._prompt_builder = HiggsAudioV3PromptBuilder(FakeTokenizer())
+        model._codec = FakeCodec()
+        mx.eval(model.parameters())
+
+        texts = [
+            "short",
+            "this is a much longer text input for the second batch item",
+            "middle length text",
+        ]
+        ref_text = "Reference transcript."
+
+        with tempfile.TemporaryDirectory() as tmp:
+            ref_audio = str(Path(tmp) / "reference.wav")
+            audio_write(
+                ref_audio,
+                np.zeros(model.sample_rate, dtype=np.float32),
+                model.sample_rate,
+            )
+            serial = [
+                next(
+                    model.generate(
+                        text,
+                        ref_audio=ref_audio,
+                        ref_text=ref_text,
+                        max_new_tokens=5,
+                        temperature=0.0,
+                        top_k=1,
+                    )
+                )
+                for text in texts
+            ]
+
+            session = model.create_tts_batch_session(
+                TTSBatchOptions(
+                    temperature=0.0,
+                    top_p=None,
+                    top_k=1,
+                    max_tokens=5,
+                    max_batch_size=len(texts),
+                )
+            )
+            session.add(
+                [
+                    TTSBatchItem(
+                        sequence_id=index,
+                        text=text,
+                        ref_audio=ref_audio,
+                        ref_text=ref_text,
+                    )
+                    for index, text in enumerate(texts)
+                ]
+            )
+
+            events = []
+            with patch.object(
+                model, "_prefill_shared_prefix", wraps=model._prefill_shared_prefix
+            ) as shared_prefill:
+                while not session.idle:
+                    events.extend(session.step())
+
+        shared_prefill.assert_called_once()
+        events = sorted(events, key=lambda event: event.sequence_id)
         self.assertEqual(
             [event.token_count for event in events],
             [result.token_count for result in serial],

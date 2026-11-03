@@ -154,8 +154,13 @@ def test_invalid_output_stride(output_factor):
         tiny_config(output_subsampling_factor=output_factor)
 
 
-def test_forward_parity_and_padding(precise_math):
-    model = tiny_model()
+@pytest.mark.parametrize(("qk_norm", "rotary_fraction"), [(False, 1.0), (True, 0.5)])
+def test_forward_parity_and_padding(precise_math, qk_norm, rotary_fraction):
+    cfg = tiny_config()
+    cfg.encoder_config.qk_norm = qk_norm
+    cfg.encoder_config.rotary_fraction = rotary_fraction
+    model = Model(cfg)
+    model.eval()
     features = np.random.default_rng(2).normal(size=(2, 8, 27)).astype(np.float32)
     lengths = [27, 17]
     actual = model(mx.array(features), mx.array(lengths))

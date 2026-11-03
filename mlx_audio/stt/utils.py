@@ -80,6 +80,7 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 
 MODEL_REMAPPING = {
+    "nemo_speechlm": "nemotron_transcribe",
     "ming_v3_asr": "ming_v3_asr",
     "parakeet": "parakeet",
     "parakeet_tdt": "parakeet",

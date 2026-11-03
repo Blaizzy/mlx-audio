@@ -259,7 +259,15 @@ class Model(nn.Module):
         )
         self.config = replace(self.config, modules_config=modules)
 
-    def streaming_step(self, features, state, central_frames, feature_length=None):
+    def streaming_step(
+        self,
+        features,
+        state,
+        central_frames,
+        feature_length=None,
+        *,
+        left_context_frames=0,
+    ):
         """Process one feature window; context predictions never enter the FIFO."""
         cfg = self.config.modules_config
         factor = self.config.encoder_config.subsampling_factor
@@ -282,13 +290,15 @@ class Model(nn.Module):
             .mean(axis=2)
         )
         n = (central_frames + factor - 1) // factor
-        start = cache_len + fifo_len
+        left = left_context_frames // factor
+        start = cache_len + fifo_len + left
         result = high[0, start * factor : start * factor + central_frames].astype(
             mx.float32
         )
-        state.fifo = mx.concatenate([state.fifo, chunk[:, :n]], axis=1)
+        state.fifo = mx.concatenate([state.fifo, chunk[:, left : left + n]], axis=1)
         state.fifo_preds = mx.concatenate(
-            [low[:, cache_len:start], low[:, start : start + n]], axis=1
+            [low[:, cache_len : cache_len + fifo_len], low[:, start : start + n]],
+            axis=1,
         )
         if state.fifo.shape[1] > cfg.fifo_len:
             pop = min(

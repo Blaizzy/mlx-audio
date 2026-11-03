@@ -10,6 +10,8 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [**Kokoro**](kokoro.md) | 82M | EN, JA, ZH, FR, ES, IT, PT, HI | -- | -- | Fast, 54 voice presets, speed control |
 | [**KittenTTS**](https://huggingface.co/collections/mlx-community/kittentts) | 14.6M / 35.5M / 73.8M | EN | -- | -- | KittenTTS 0.8 nano/micro/mini, compact edge-friendly TTS, speed control |
 | [**Qwen3-TTS**](qwen3-tts.md) | 0.6B / 1.7B | ZH, EN, JA, KO, + more | Yes | Yes | Voice cloning, emotion control, voice design, batch generation |
+| [**Audio8 TTS Realistic**](audio8.md) | 0.6B + codec | 23 languages | Yes | -- | Multilingual speech synthesis with 44.1 kHz output |
+| [**Maya2 Native**](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/maya2/README.md) | 2.5B | 11 Indic languages + EN | Yes | Yes | 20 named voices, cross-language cloning, 24 kHz Mimi audio |
 | [**Breeze TTS 2**](breeze-tts.md) | 1B | EN, ZH | Yes | Yes | Voice design, cloning, direction, and inline vocal events |
 | [**Higgs Audio v3**](higgs_audio_v3.md) | 4B | 100 languages | Yes | -- | Conversational TTS, inline emotion/style/prosody controls, bundled Higgs codec |
 | [**Fish Audio Drama 3**](fish-drama3.md) | 35B (A3B) | 83 languages | Yes | Yes | Up to 16 speakers per text, inline delivery cues, long-form chunking |

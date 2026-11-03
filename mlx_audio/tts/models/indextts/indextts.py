@@ -55,8 +55,9 @@ class GPTConfig:
 class ModelArgs:
     bigvgan: BigVGANConditioningConfig
     gpt: GPTConfig
-    tokenizer_name: str | Path
+    tokenizer_name: str | Path | None = None
     sample_rate: int = 24000
+    model_path: str | None = None
 
 
 class Model(nn.Module):
@@ -78,16 +79,21 @@ class Model(nn.Module):
         self.args = args
         self.sample_rate = args.sample_rate
 
+        tokenizer_name = args.tokenizer_name or args.model_path
+        if tokenizer_name is None:
+            raise ValueError(
+                "IndexTTS needs tokenizer_name or model_path in its config."
+            )
         try:
             self.tokenizer = spm.SentencePieceProcessor(
                 model_file=huggingface_hub.hf_hub_download(  # type: ignore
-                    str(args.tokenizer_name), "tokenizer.model"
+                    str(tokenizer_name), "tokenizer.model"
                 )
             )
         except Exception:
             self.tokenizer = spm.SentencePieceProcessor(
                 model_file=str(  # type: ignore
-                    (Path(args.tokenizer_name) / "tokenizer.model").resolve()
+                    (Path(tokenizer_name) / "tokenizer.model").resolve()
                 )
             )
 
@@ -284,12 +290,18 @@ class Model(nn.Module):
             (len(tokenized), longest + conditioning.shape[1], self.args.gpt.model_dim)
         )
 
+        # The start mel token opens the mel sequence: mel embedding at mel position 0,
+        # as the reference's GPT2InferenceModel embeds it.
+        start_mel = mx.array([[self.args.gpt.start_mel_token]])
+        start_mel_embedding = self.mel_embedding(start_mel) + self.mel_pos_embedding(
+            start_mel
+        )
+
         for idx, tokens in enumerate(tokenized):
             # append tokens
             tokens.insert(0, self.args.gpt.start_text_token)
             tokens.append(self.args.gpt.stop_text_token)
-            tokens.append(self.args.gpt.start_mel_token)
-            length = len(tokens)
+            length = len(tokens) + 1
 
             tokens = mx.array(tokens)[None, :]
 
@@ -297,7 +309,7 @@ class Model(nn.Module):
                 tokens
             )
             embedding[idx : idx + 1, longest - length :, :] = mx.concat(
-                [conditioning, text_embedding], axis=1
+                [conditioning, text_embedding, start_mel_embedding], axis=1
             )
 
         return embedding
@@ -396,8 +408,9 @@ class Model(nn.Module):
 
             generated_tokens.append(next_token.item())
 
+            # Mel position k + 2 for the k-th generated token, as in the reference's kv-cache path.
             mel_emb = self.mel_embedding(next_token) + self.mel_pos_embedding(
-                next_token, embedding.shape[1] + mel_position
+                next_token, mel_position + 2
             )
 
             inputs = mel_emb

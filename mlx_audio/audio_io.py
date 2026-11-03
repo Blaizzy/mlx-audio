@@ -692,7 +692,12 @@ def write(
     if data.dtype in (np.float32, np.float64):
         # Clip to [-1, 1] range and convert to int16
         data = np.clip(data, -1.0, 1.0)
-        data = (data * 32767).astype(np.int16)
+        if type(data) is np.ndarray:
+            # Clipping allocated this buffer, so scaling cannot change the input.
+            data *= 32767
+            data = data.astype(np.int16)
+        else:
+            data = (data * 32767).astype(np.int16)
     elif data.dtype != np.int16:
         data = data.astype(np.int16)
 
@@ -702,7 +707,7 @@ def write(
         samples_flat = data
     else:
         nchannels = data.shape[1]
-        samples_flat = data.flatten()
+        samples_flat = data.ravel() if type(data) is np.ndarray else data.flatten()
 
     if format == "pcm" or format == "raw":
         # Flatten for miniaudio (interleaved)
@@ -719,7 +724,11 @@ def write(
         import array
 
         # Convert to array.array for miniaudio
-        samples_array = array.array("h", samples_flat.tolist())
+        if type(samples_flat) is np.ndarray:
+            samples_array = array.array("h")
+            samples_array.frombytes(samples_flat.tobytes())
+        else:
+            samples_array = array.array("h", samples_flat.tolist())
 
         # Create DecodedSoundFile
         sound = miniaudio.DecodedSoundFile(

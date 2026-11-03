@@ -137,9 +137,10 @@ class AudioLatentTools:
         denoise_mask = mx.ones(
             self.target_shape.mask_shape().to_mlx_shape(), dtype=mx.float32
         )
-        positions = self.patchifier.get_patch_grid_bounds(self.target_shape).astype(
-            dtype
-        )
+        # Keep the time stamps (seconds) in float32 whatever the latent dtype, as
+        # LTX-2 does: bfloat16 steps by 1/16 s above 8 s, so adjacent 0.04 s
+        # frames would share a RoPE position.
+        positions = self.patchifier.get_patch_grid_bounds(self.target_shape)
         return self.patchify(
             LatentState(
                 latent=initial_latent,

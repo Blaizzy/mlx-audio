@@ -644,6 +644,23 @@ class TestModel(unittest.TestCase):
     def test_sample_rate(self):
         self.assertEqual(self.model.sample_rate, 16000)
 
+    def test_long_audio_is_decoded_in_chunks(self):
+        from unittest import mock
+
+        self.model._tokenizer = mock.Mock(
+            build_prompt_tokens=lambda **_: [1, 2], eos_id=0, decode=lambda ids: "x"
+        )
+        audio = mx.random.normal((40 * 16000,)) * 0.1
+        with mock.patch.object(
+            self.model, "_preprocess_audio", wraps=self.model._preprocess_audio
+        ) as pre:
+            self.model.generate(audio, max_tokens=1, chunk_duration=1200)
+            self.assertEqual(pre.call_count, 1)
+            pre.reset_mock()
+            out = self.model.generate(audio, max_tokens=1, chunk_duration=10)
+            self.assertGreaterEqual(pre.call_count, 3)
+        self.assertEqual(len(out.segments), pre.call_count)
+
 
 if __name__ == "__main__":
     unittest.main()
