@@ -9,7 +9,7 @@ a small edit rate.
 NEMOTRON_UNIFIED_MLX_PATH names the checkpoint, a local directory or a Hugging Face
 repo id, as ``load`` takes either:
 
-    NEMOTRON_UNIFIED_MLX_PATH=T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit \
+    NEMOTRON_UNIFIED_MLX_PATH=mlx-community/nemotron-labs-unified-asr-0.6b-8bit \
         pytest mlx_audio/stt/tests/test_nemotron_unified_nemo_parity.py
 """
 

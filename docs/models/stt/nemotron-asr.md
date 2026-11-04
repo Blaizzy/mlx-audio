@@ -17,14 +17,16 @@ Both transcribe with punctuation and capitalization. The [module README](https:/
 |-------|-----------|------|
 | **Nemotron 3.5 ASR Streaming** | bf16 | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) |
 | **Nemotron 3.5 ASR Streaming** | 8-bit | [mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit) |
-| **Nemotron Unified ASR** | 8-bit | [T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit](https://huggingface.co/T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit) |
+| **Nemotron Unified ASR** | bf16 | [mlx-community/nemotron-labs-unified-asr-0.6b-bf16](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-bf16) |
+| **Nemotron Unified ASR** | 8-bit | [mlx-community/nemotron-labs-unified-asr-0.6b-8bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-8bit) |
+| **Nemotron Unified ASR** | 4-bit | [mlx-community/nemotron-labs-unified-asr-0.6b-4bit](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-4bit) |
 
 ## Python Usage
 
 ```python
 from mlx_audio.stt import load
 
-model = load("T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit")
+model = load("mlx-community/nemotron-labs-unified-asr-0.6b-8bit")
 
 # Offline
 print(model.generate("speech.wav", language="fr").text)
@@ -45,6 +47,6 @@ while not session.done:
 
 ```bash
 python -m mlx_audio.stt.generate \
-  --model T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit \
+  --model mlx-community/nemotron-labs-unified-asr-0.6b-8bit \
   --audio speech.wav --format txt
 ```

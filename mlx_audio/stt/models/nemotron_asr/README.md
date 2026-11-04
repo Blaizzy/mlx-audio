@@ -20,7 +20,9 @@ The same module runs NVIDIA's
 |-------|------|-----------|------|
 | Nemotron 3.5 | [`mlx-community/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) | bf16 | ~1.2 GB |
 | Nemotron 3.5 | [`mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit`](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit) | 8-bit | ~720 MB |
-| Nemotron Unified | [`T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit`](https://huggingface.co/T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit) | 8-bit | ~744 MB |
+| Nemotron Unified | [`mlx-community/nemotron-labs-unified-asr-0.6b-bf16`](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-bf16) | bf16 | ~1.25 GB |
+| Nemotron Unified | [`mlx-community/nemotron-labs-unified-asr-0.6b-8bit`](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-8bit) | 8-bit | ~744 MB |
+| Nemotron Unified | [`mlx-community/nemotron-labs-unified-asr-0.6b-4bit`](https://huggingface.co/mlx-community/nemotron-labs-unified-asr-0.6b-4bit) | 4-bit | ~472 MB |
 
 ## Usage
 
@@ -122,7 +124,7 @@ context and keeps the chunk's frames, as NeMo's
 context; the left context (5.6 s by default) only costs compute.
 
 ```python
-model = load("T0mSIlver/nemotron-labs-unified-asr-0.6b-8bit")
+model = load("mlx-community/nemotron-labs-unified-asr-0.6b-8bit")
 
 # Offline: one full-context pass (up to 60 s; longer audio streams 10/10/5 s windows).
 print(model.generate("speech.wav", language="fr").text)
