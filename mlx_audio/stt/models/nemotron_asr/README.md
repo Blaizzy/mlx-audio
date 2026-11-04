@@ -88,8 +88,8 @@ for options, latency, and the runnable example.
 
 Pass `language=<key>` where `<key>` is from the model's `prompt_dictionary`
 (`en-US`, `es-ES`, `zh-CN`, `fr-FR`, …, or `auto`). In `auto` mode the model
-infers the language and emits a leading `<lang>` tag; these tags are stripped
-from the returned text.
+infers the language; Nemotron 3.5 also emits a leading `<lang>` tag, which is
+stripped from the returned text (Unified's vocabulary has no tag pieces).
 
 ## Look-ahead / latency
 
