@@ -22,7 +22,7 @@ dependencies = [
     "huggingface_hub>=1.0",
     "jinja2>=3.1.6",
     "miniaudio>=1.71",
-    "mlx==0.32.4",
+    "mlx>=0.32.4",
     "numpy>=1.26.4",
     "scipy>=1.10.0",
     "sentencepiece>=0.2.0",
