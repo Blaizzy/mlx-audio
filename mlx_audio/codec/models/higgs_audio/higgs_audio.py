@@ -21,39 +21,44 @@ def _sinc_resample(
     """Resample using Hann-windowed sinc interpolation (torchaudio-compatible).
 
     Matches torchaudio.functional.resample with method='sinc_interp_hann'.
+    Output sample k = frame * new_r + phase is torchaudio's kernel row `phase`
+    applied to the padded input from frame * orig_r on. That row is zero outside
+    2 * width + 1 taps, so only those are computed: memory stays proportional to
+    the signal, also for rates such as 44099 Hz that barely reduce.
     """
     if orig_freq == new_freq:
         return waveform
     gcd = math.gcd(int(orig_freq), int(new_freq))
-    orig_r = orig_freq // gcd
-    new_r = new_freq // gcd
+    orig_r = int(orig_freq) // gcd
+    new_r = int(new_freq) // gcd
 
     base_freq = min(orig_r, new_r) * rolloff
     width = math.ceil(lowpass_filter_width * orig_r / base_freq)
+    taps = 2 * width + 1
 
-    idx = np.arange(-width, width + orig_r, dtype=np.float64)[None, :] / orig_r
-    t = np.arange(0, -new_r, -1, dtype=np.float64)[:, None] / new_r + idx
-    t *= base_freq
+    # The first tap of each row that can be nonzero, and torchaudio's t there.
+    phases = np.arange(new_r)
+    first = phases * orig_r // new_r
+    idx = (first[:, None] + np.arange(taps) - width) / orig_r
+    t = (-phases[:, None] / new_r + idx) * base_freq
     t = np.clip(t, -lowpass_filter_width, lowpass_filter_width)
 
     window = np.cos(t * np.pi / lowpass_filter_width / 2) ** 2
-    t_pi = t * np.pi
-    kernel = np.where(t_pi == 0, 1.0, np.sin(t_pi) / t_pi)
-    kernel = (kernel * window * (base_freq / orig_r)).astype(np.float32)
+    kernel = (np.sinc(t) * window * (base_freq / orig_r)).astype(np.float32)
 
     length = len(waveform)
     padded = np.pad(waveform, (width, width + orig_r))
+    rows = np.lib.stride_tricks.sliding_window_view(padded, taps)
 
     out_len = math.ceil(length * new_r / orig_r)
-    result = np.zeros(out_len, dtype=np.float32)
-    for phase in range(new_r):
-        conv = np.convolve(padded, kernel[phase, ::-1], mode="valid")
-        samples = conv[::orig_r]
-        n = min(len(samples), math.ceil((out_len - phase) / new_r))
-        for i in range(n):
-            pos = phase + i * new_r
-            if pos < out_len:
-                result[pos] = samples[i]
+    result = np.empty(out_len, dtype=np.float32)
+    for phase in range(min(new_r, out_len)):
+        frames = (out_len - 1 - phase) // new_r + 1
+        # einsum stays out of BLAS: with OpenBLAS (NumPy 1.26 wheels), `@` on
+        # these strided rows takes seconds per reference instead of milliseconds.
+        result[phase::new_r] = np.einsum(
+            "ft,t->f", rows[first[phase] :: orig_r][:frames], kernel[phase]
+        )
     return result
 
 
