@@ -18,7 +18,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import mlx.core as mx
-import numpy as np
 
 from .audio import log_mel_spectrogram
 
@@ -89,7 +88,7 @@ class BufferedEncoderState:
         self.left_samples = context.left * self.frame_samples
         self.chunk_samples = context.chunk * self.frame_samples
         self.right_samples = context.right * self.frame_samples
-        self._samples = np.zeros(0, dtype=np.float32)
+        self._samples = mx.zeros(0, dtype=mx.float32)
         self._start = 0  # absolute index of self._samples[0]
         self._total = 0
         self._next = 0  # absolute start of the next chunk
@@ -112,13 +111,13 @@ class BufferedEncoderState:
         """Prompted chunks this push completes, in audio order. Chunks that become
         ready together (a step after a slow one, a whole file) encode their
         equal-length windows as one batch."""
+        samples = mx.array(samples, dtype=mx.float32).reshape(-1)
         if self._done:
-            if np.asarray(samples).size:
+            if samples.size:
                 raise RuntimeError("buffered encoder is finished")
             return []
-        samples = np.asarray(samples, dtype=np.float32).reshape(-1)
         if samples.size:
-            self._samples = np.concatenate([self._samples, samples])
+            self._samples = mx.concatenate([self._samples, samples])
             self._total += samples.size
 
         C, R, L = self.chunk_samples, self.right_samples, self.left_samples
@@ -151,7 +150,7 @@ class BufferedEncoderState:
         return [o for o in outputs if o.shape[1] > 0]
 
     def flush(self) -> list[mx.array]:
-        return self.push(np.zeros(0, dtype=np.float32), final=True)
+        return self.push(mx.zeros(0, dtype=mx.float32), final=True)
 
     def _trim(self):
         # The next step starts its buffer at or after the previous step's start.
@@ -193,7 +192,7 @@ class BufferedEncoderState:
         model = self.model
         mels = [
             log_mel_spectrogram(
-                mx.array(self._samples[s - self._start : s - self._start + length]),
+                self._samples[s - self._start : s - self._start + length],
                 model.preprocessor_config,
             )
             for s in starts

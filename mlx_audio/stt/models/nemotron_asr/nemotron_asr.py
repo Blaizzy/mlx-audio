@@ -19,7 +19,6 @@ from typing import Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from mlx.utils import tree_flatten
 
 from mlx_audio.stt.models.nemo.alignment import (
@@ -578,7 +577,7 @@ class Model(nn.Module):
         state = BufferedEncoderState(self, context, language)
         result = None
         for result in self._decode_prompted_chunks(
-            state.push(np.asarray(audio_data, dtype=np.float32), final=True)
+            state.push(audio_data, final=True)
         ):
             pass
         return result or sentences_to_result([])
@@ -588,7 +587,7 @@ class Model(nn.Module):
             att_context_size or self.default_att_context_size
         )
         state = BufferedEncoderState(self, context, language or self.default_language)
-        samples = np.asarray(audio_data, dtype=np.float32)
+        samples = audio_data.astype(mx.float32)
         step = state.chunk_samples
 
         def chunks():
