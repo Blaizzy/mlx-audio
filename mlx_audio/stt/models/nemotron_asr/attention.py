@@ -58,7 +58,9 @@ class RelPositionMultiHeadAttention(nn.Module):
 
         k = k.reshape(batch, seq, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(batch, seq, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
-        p = p.reshape(batch, pos_len, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        p = p.reshape(p.shape[0], pos_len, self.n_head, self.head_dim).transpose(
+            0, 2, 1, 3
+        )
 
         # matrix_bd: position-dependent term, scaled and rel-shifted to (B, H, Tq, Tk).
         matrix_bd = mx.matmul(q_v, p.swapaxes(-2, -1))
