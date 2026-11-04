@@ -65,17 +65,13 @@ def _power_to_log_mel(
     # normalize: NeMo only normalizes for "per_feature" / "all_features". "NA" (and
     # anything else) is a no-op, which is what this model was trained with.
     if args.normalize == "per_feature":
-        frames = x.shape[1] if valid_frames is None else valid_frames
-        valid = x[:, :frames]
+        valid = x[:, :valid_frames]
         mean = mx.mean(valid, axis=1, keepdims=True)
-        if frames > 1:
-            variance = mx.sum((valid - mean) ** 2, axis=1, keepdims=True) / (frames - 1)
-            std = mx.sqrt(variance)
-        else:
-            std = mx.zeros_like(mean)
+        n = max(valid_frames - 1, 1)
+        std = mx.sqrt(mx.sum((valid - mean) ** 2, axis=1, keepdims=True) / n)
         x = (x - mean) / (std + 1e-5)
-        if valid_frames is not None and valid_frames < x.shape[1]:
-            x = mx.where(mx.arange(x.shape[1])[None, :] < valid_frames, x, 0)
+        # The centered STFT adds frames past the valid ones; NeMo zeroes them.
+        x = mx.where(mx.arange(x.shape[1])[None, :] < valid_frames, x, 0)
     elif args.normalize == "all_features":
         x = (x - mx.mean(x)) / (mx.std(x) + 1e-5)
 

@@ -39,14 +39,15 @@ class NemotronStreamingSession:
         self.att_context_size = model.default_att_context_size
         self._context = None
         if model.buffered:
-            self._context = BufferedContext.from_att_context_size(
-                model.default_att_context_size
-            )
             if att_context_size is not None:
                 self._context = BufferedContext.from_att_context_size(att_context_size)
             elif transcription_delay_ms is not None:
                 self._context = BufferedContext.from_delay_ms(
-                    transcription_delay_ms, left=self._context.left
+                    transcription_delay_ms, left=model.default_att_context_size[0]
+                )
+            else:
+                self._context = BufferedContext.from_att_context_size(
+                    model.default_att_context_size
                 )
             self.att_context_size = self._context.as_list()
         elif att_context_size is not None:

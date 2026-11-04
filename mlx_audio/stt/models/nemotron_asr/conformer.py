@@ -19,8 +19,8 @@ from .attention import RelPositionalEncoding, RelPositionMultiHeadAttention
 from .config import ConformerArgs
 
 NEG_INF = -1e30
-# NeMo's masking value (INF_VAL). Unlike -1e30 it stays finite in float16, where a
-# query row with every key masked would otherwise turn NaN.
+# Unlike -1e30, -1e4 stays finite in float16, where a query row with every key
+# masked would otherwise turn NaN.
 MASK_VALUE = -1e4
 
 
@@ -47,21 +47,14 @@ def create_chunked_rc_visibility(
     """Boolean (T, T) visibility for NeMo's ``chunked_limited_with_rc`` style.
 
     Frame ``i`` belongs to chunk ``i // chunk_size`` and sees frames from
-    ``left_context`` before its chunk to ``right_context`` after it. A negative
-    context is unlimited; ``chunk_size <= 0`` means full context.
+    ``left_context`` before its chunk to ``right_context`` after it.
     """
     frames = mx.arange(seq_len, dtype=mx.int32)
-    if chunk_size <= 0:
-        return mx.ones((seq_len, seq_len), dtype=mx.bool_)
-    chunk_start = (frames // chunk_size) * chunk_size
-    start = chunk_start - left_context if left_context >= 0 else chunk_start * 0
-    end = (
-        chunk_start + chunk_size - 1 + right_context
-        if right_context >= 0
-        else chunk_start * 0 + seq_len - 1
-    )
+    chunk_start = (frames // chunk_size)[:, None] * chunk_size
     j = frames[None, :]
-    return (j >= start[:, None]) & (j <= end[:, None])
+    return (j >= chunk_start - left_context) & (
+        j < chunk_start + chunk_size + right_context
+    )
 
 
 class FeedForward(nn.Module):
@@ -165,8 +158,8 @@ class CausalDwStridingSubsampling(nn.Module):
     """Depthwise-striding conv subsampling (``dw_striding``, factor 8).
 
     Causal checkpoints pad each strided conv asymmetrically (CausalConv2D: left
-    ``k-1``, right ``stride-1``). Non-causal checkpoints pad ``1`` on each side and,
-    like NeMo's ``MaskedConvSequential``, zero time steps past each layer's valid
+    ``k-1``, right ``stride-1``). Non-causal checkpoints pad ``1`` on each side and
+    zero time steps past each layer's valid
     length so padding never mixes back into valid frames.
     """
 

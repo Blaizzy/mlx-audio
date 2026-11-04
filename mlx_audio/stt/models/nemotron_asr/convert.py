@@ -62,9 +62,6 @@ def _build_config(nemo_cfg: dict) -> dict:
         # NeMo's default: symmetric for odd kernels.
         conv_context = [(kernel - 1) // 2, kernel // 2]
     att_style = enc.get("att_context_style", "chunked_limited")
-    att_context = enc.get("att_context_size") or [[56, 13]]
-    if isinstance(att_context[0], int):
-        att_context = [att_context]
     unified = att_style == "chunked_limited_with_rc"
     if unified:
         # Unified checkpoints train over many [left, chunk, right] contexts;
@@ -73,6 +70,7 @@ def _build_config(nemo_cfg: dict) -> dict:
         att_context = [[-1, -1, -1]]
         default_att_context = [70, 1, 3]
     else:
+        att_context = enc.get("att_context_size", [[56, 13]])
         default_att_context = [56, 13]
 
     return {

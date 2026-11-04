@@ -539,7 +539,7 @@ class Model(nn.Module):
     @property
     def compute_dtype(self) -> mx.Dtype:
         """The weights' float dtype (a quantized layer's scales), used by Unified paths
-        for activations as the Swift port does; float32 weights compute in float32."""
+        for activations."""
         out = self.encoder.pre_encode.out
         scales = getattr(out, "scales", None)
         dtype = (scales if scales is not None else out.weight).dtype

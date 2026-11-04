@@ -1,8 +1,7 @@
 """Buffered streaming for Nemotron Unified (``chunked_limited_with_rc``) checkpoints.
 
 The Unified encoder has non-causal convolutions and a right context, so it cannot
-reuse per-layer caches. Like NeMo's ``speech_to_text_streaming_infer_rnnt.py``,
-each step re-runs the mel frontend and the encoder on a sliding audio buffer of
+reuse per-layer caches. Each step re-runs the mel frontend and the encoder on a sliding audio buffer of
 left context + chunk + right context, keeps the chunk's encoder frames, and lets
 greedy RNN-T decoding continue from the previous step's state.
 
@@ -62,7 +61,7 @@ class BufferedContext:
         cls, delay_ms: int, left: int = DEFAULT_LEFT_CONTEXT
     ) -> "BufferedContext":
         """Context for a latency, rounded to whole 80 ms frames within 160-2080 ms."""
-        frames = min(max(int(delay_ms / 80 + 0.5), 2), 26)  # half up, as in Swift
+        frames = min(max(int(delay_ms / 80 + 0.5), 2), 26)  # round half up
         row = max(ms for ms in DELAY_CONTEXTS if ms <= frames * 80)
         chunk = DELAY_CONTEXTS[row][0]
         return cls(left, chunk, frames - chunk)

@@ -140,8 +140,7 @@ Pass the spoken language (`en`, `fr`, `de`, … or `auto`). As in NeMo, a bare
 code matches a unique locale key and an unknown or ambiguous language raises.
 At low latency, `auto` can emit a few first tokens in the wrong language. `stream_generate`
 and `generate(att_context_size=[left, chunk, right])` take explicit contexts in
-80 ms encoder frames. Convert it with the command below
-(`--nemo-path nvidia/nemotron-labs-unified-asr-0.6b`).
+80 ms encoder frames.
 
 ## Converting the original weights (optional)
 
@@ -154,5 +153,6 @@ python -m mlx_audio.stt.models.nemotron_asr.convert \
     --mlx-path  ./nemotron-3.5-asr-streaming-0.6b-mlx
 ```
 
+For Unified, pass `--nemo-path nvidia/nemotron-labs-unified-asr-0.6b`.
 `--nemo-path` takes a local `.nemo` file **or** a HuggingFace repo id. Add `--quantize`
 (`--q-bits 8`) for a quantized build, or `--dtype float16`.
