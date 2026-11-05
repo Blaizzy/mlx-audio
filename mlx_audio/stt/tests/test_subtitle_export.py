@@ -3,7 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from mlx_audio.stt.generate import save_as_json, save_as_srt, save_as_vtt
+from mlx_audio.stt.generate import (
+    format_timestamp,
+    format_vtt_timestamp,
+    save_as_json,
+    save_as_srt,
+    save_as_vtt,
+)
 
 
 @pytest.mark.parametrize(
@@ -91,3 +97,20 @@ def test_json_preserves_missing_null_and_numeric_timestamps(tmp_path):
         {**output.segments[1], "duration": None},
         {**output.segments[2], "duration": 1.5},
     ]
+
+
+@pytest.mark.parametrize(
+    "seconds,expected",
+    [
+        (0.0, "00:00:00,000"),
+        (61.5, "00:01:01,500"),
+        (3661.234, "01:01:01,234"),
+        # Values that round up at a boundary must carry, not emit SS=60.
+        (59.9996, "00:01:00,000"),
+        (119.9999, "00:02:00,000"),
+        (3599.9999, "01:00:00,000"),
+    ],
+)
+def test_format_timestamp_carries_rounding_at_boundaries(seconds, expected):
+    assert format_timestamp(seconds) == expected
+    assert format_vtt_timestamp(seconds) == expected.replace(",", ".")

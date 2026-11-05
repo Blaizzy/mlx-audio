@@ -114,10 +114,14 @@ def parse_args(argv: Optional[List[str]] = None):
 
 def format_timestamp(seconds: float) -> str:
     """Convert seconds to HH:MM:SS,mmm format for SRT/VTT"""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    seconds = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{seconds:06.3f}".replace(".", ",")
+    # Round to whole milliseconds first, then decompose, so a value that
+    # rounds up at a minute/hour boundary carries into the next field instead
+    # of emitting an illegal seconds field (e.g. 59.9996 -> "00:00:60,000").
+    total_ms = int(round(seconds * 1000))
+    hours, total_ms = divmod(total_ms, 3_600_000)
+    minutes, total_ms = divmod(total_ms, 60_000)
+    secs, milliseconds = divmod(total_ms, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
 
 
 def format_vtt_timestamp(seconds: float) -> str:
