@@ -251,6 +251,23 @@ class TestZonos2TextNorm(unittest.TestCase):
             "Mix one half cup on june thirteenth twenty twenty six.",
         )
 
+    def test_bare_time_keeps_space_before_next_word(self):
+        normalizer = TTSTextNormalizer()
+        # Without am/pm, the space after the time is not part of the match, so the
+        # next word is not glued to the spoken time.
+        self.assertEqual(
+            normalizer.normalize("Meet at 3:30 tomorrow.", "en"),
+            "Meet at three thirty tomorrow.",
+        )
+        self.assertEqual(
+            normalizer.normalize("9:05 and later", "en"), "nine oh five and later"
+        )
+        self.assertEqual(normalizer.normalize("14:00 sharp", "en"), "fourteen sharp")
+        # With am/pm, the space before the suffix is still consumed.
+        self.assertEqual(
+            normalizer.normalize("3:30 pm today", "en"), "three thirty p m today"
+        )
+
     def test_non_english_text_passes_through(self):
         normalizer = TTSTextNormalizer()
         self.assertFalse(normalizer.supported("fr"))
