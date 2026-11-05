@@ -14,7 +14,9 @@ import pytest
 from mlx_audio.stt.models.nemotron_asr import Model
 
 FIXTURE = json.loads(
-    (Path(__file__).parent / "data" / "nemotron_unified_prompt_languages.json").read_text()
+    (
+        Path(__file__).parent / "data" / "nemotron_unified_prompt_languages.json"
+    ).read_text()
 )
 MODEL = SimpleNamespace(
     prompt_dictionary=FIXTURE["prompt_dictionary"], default_language="auto"
@@ -36,5 +38,7 @@ def test_resolves_like_nemo(language, expected):
 
 def test_bare_codes_and_locales_differ_where_nemo_says():
     # es -> 3 but es-ES -> 2; pt -> 13 (pt-PT) but pt-BR -> 12; en-GB is its own prompt.
-    assert [resolve(k) for k in ("es", "es-ES", "pt", "pt-PT", "pt-BR", "en", "en-GB")] == [3, 2, 13, 13, 12, 0, 1]
+    assert [
+        resolve(k) for k in ("es", "es-ES", "pt", "pt-PT", "pt-BR", "en", "en-GB")
+    ] == [3, 2, 13, 13, 12, 0, 1]
     assert resolve(None) == resolve("auto") == 127

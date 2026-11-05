@@ -576,9 +576,7 @@ class Model(nn.Module):
         )
         state = BufferedEncoderState(self, context, language)
         result = None
-        for result in self._decode_prompted_chunks(
-            state.push(audio_data, final=True)
-        ):
+        for result in self._decode_prompted_chunks(state.push(audio_data, final=True)):
             pass
         return result or sentences_to_result([])
 
