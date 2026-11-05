@@ -189,6 +189,7 @@ _time_re = re.compile(r"(\d\d?:\d\d(?::\d\d(?:\.\d+)?)?)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
 _decimal_number_re = re.compile(r"\d+\.\d+")
+_num_letter_split_re = re.compile(r"(\d[a-z]|[a-z]\d)", re.IGNORECASE)
 _number_re = re.compile(r"\d+")
 
 
@@ -201,6 +202,11 @@ def _expand_num_suffix(m):
     suffix = match[-1].upper()
     suffixes = {"K": "thousand", "M": "million", "B": "billion", "T": "trillion"}
     return f"{match[:-1]} {suffixes.get(suffix, '')}"
+
+
+def _split_alphanumeric(m):
+    match = m.group(1)
+    return f"{match[0]} {match[1]}"
 
 
 def _remove_commas(m):
@@ -291,6 +297,8 @@ def normalize_numbers(text: str) -> str:
     text = re.sub(_dollars_re, _expand_dollars, text)
     text = re.sub(_decimal_number_re, _expand_decimal_point, text)
     text = re.sub(_ordinal_re, _expand_ordinal, text)
+    for _ in range(2):  # a second pass splits overlapping matches, like "a1b"
+        text = re.sub(_num_letter_split_re, _split_alphanumeric, text)
     text = re.sub(_number_re, _expand_number, text)
     return text
 
