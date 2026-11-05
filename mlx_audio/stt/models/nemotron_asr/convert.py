@@ -56,6 +56,23 @@ def _build_config(nemo_cfg: dict) -> dict:
     enc_hidden = defaults.get("enc_hidden", enc["d_model"])
     num_prompts = defaults.get("num_prompts", 128)
 
+    kernel = enc["conv_kernel_size"]
+    conv_context = enc.get("conv_context_size", "causal")
+    if conv_context is None:
+        # NeMo's default: symmetric for odd kernels.
+        conv_context = [(kernel - 1) // 2, kernel // 2]
+    att_style = enc.get("att_context_style", "chunked_limited")
+    unified = att_style == "chunked_limited_with_rc"
+    if unified:
+        # Unified checkpoints train over many [left, chunk, right] contexts;
+        # inference picks one per run. Default: 5.6 s left, 80 ms chunk,
+        # 240 ms right (320 ms latency, NVIDIA's recommended setting).
+        att_context = [[-1, -1, -1]]
+        default_att_context = [70, 1, 3]
+    else:
+        att_context = enc.get("att_context_size", [[56, 13]])
+        default_att_context = [56, 13]
+
     return {
         "model_type": "nemotron_asr",
         "target": nemo_cfg.get("target", ""),
@@ -74,6 +91,9 @@ def _build_config(nemo_cfg: dict) -> dict:
             "log_zero_guard_value": float(pre.get("log_zero_guard_value", 2.0**-24)),
             "pad_to": pre.get("pad_to", 0),
             "pad_value": pre.get("pad_value", 0.0),
+            # NeMo 3.x pads the centered STFT with zeros; the 3.5 port keeps its
+            # reflect default.
+            **({"pad_mode": "constant"} if unified else {}),
         },
         "encoder": {
             "feat_in": enc["feat_in"],
@@ -85,15 +105,14 @@ def _build_config(nemo_cfg: dict) -> dict:
             "subsampling_conv_channels": enc["subsampling_conv_channels"],
             "conv_kernel_size": enc["conv_kernel_size"],
             "causal_downsampling": enc.get("causal_downsampling", True),
-            "conv_context_size": enc.get("conv_context_size", "causal"),
+            "conv_context_size": conv_context,
             "conv_norm_type": enc.get("conv_norm_type", "layer_norm"),
             "self_attention_model": enc.get("self_attention_model", "rel_pos"),
-            "att_context_style": enc.get("att_context_style", "chunked_limited"),
-            "att_context_size": [
-                list(c) for c in enc.get("att_context_size", [[56, 13]])
-            ],
+            "att_context_style": att_style,
+            "att_context_size": [list(c) for c in att_context],
             "pos_emb_max_len": enc.get("pos_emb_max_len", 5000),
-            "use_bias": enc.get("use_bias", False),
+            # NeMo's ConformerEncoder defaults to biased projections.
+            "use_bias": enc.get("use_bias", True),
             "xscaling": enc.get("xscaling", False),
         },
         "prompt": {
@@ -116,7 +135,7 @@ def _build_config(nemo_cfg: dict) -> dict:
         },
         "vocabulary": list(joint["vocabulary"]),
         "default_language": "auto",
-        "default_att_context_size": [56, 13],
+        "default_att_context_size": default_att_context,
         "max_symbols": nemo_cfg.get("decoding", {})
         .get("greedy", {})
         .get("max_symbols", 10),
@@ -133,8 +152,8 @@ def _convert_weights(state_dict, dtype: mx.Dtype) -> dict:
     lstm_bias: dict[str, list] = {}
 
     for key, tensor in state_dict.items():
-        if key.startswith("preprocessor."):
-            continue  # featurizer buffers — recomputed in MLX
+        if key.startswith("preprocessor.") or key.endswith(".num_batches_tracked"):
+            continue  # featurizer buffers and BatchNorm counters
 
         # LSTM: combine ih/hh biases and rename to nn.LSTM (Wx/Wh/bias) per layer.
         if ".dec_rnn.lstm." in key:

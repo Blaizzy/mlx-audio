@@ -2,8 +2,11 @@
 
 Differences from the Parakeet preprocessor:
   * 128 mel bins (vs 80).
-  * ``normalize: NA`` => the features are NOT normalized (NeMo's normalize_batch
-    falls through and returns the input unchanged for an unrecognized type).
+  * ``normalize: NA`` (Nemotron 3.5) => the features are NOT normalized (NeMo's
+    normalize_batch falls through and returns the input unchanged).
+  * ``normalize: per_feature`` (Nemotron Unified) normalizes over NeMo's valid
+    frames (``samples // hop``) and zeroes the trailing centered frame, as NeMo's
+    featurizer does.
 
 Everything else matches NeMo at inference time: preemphasis 0.97, symmetric Hann
 window, power spectrogram (mag_power=2.0), Slaney mel filters, log with a small
@@ -46,7 +49,10 @@ def _preemphasize(x: mx.array, args: PreprocessArgs) -> mx.array:
 
 
 def _power_to_log_mel(
-    power: mx.array, args: PreprocessArgs, dtype: mx.Dtype
+    power: mx.array,
+    args: PreprocessArgs,
+    dtype: mx.Dtype,
+    valid_frames: int | None = None,
 ) -> mx.array:
     filters = mel_filters(
         args.sample_rate, args.n_fft, args.features, norm="slaney", mel_scale="slaney"
@@ -59,11 +65,13 @@ def _power_to_log_mel(
     # normalize: NeMo only normalizes for "per_feature" / "all_features". "NA" (and
     # anything else) is a no-op, which is what this model was trained with.
     if args.normalize == "per_feature":
-        mean = mx.mean(x, axis=1, keepdims=True)
-        n = max(x.shape[1] - 1, 1)
-        variance = mx.sum((x - mean) ** 2, axis=1, keepdims=True) / n
-        std = mx.sqrt(variance)
+        valid = x[:, :valid_frames]
+        mean = mx.mean(valid, axis=1, keepdims=True)
+        n = max(valid_frames - 1, 1)
+        std = mx.sqrt(mx.sum((valid - mean) ** 2, axis=1, keepdims=True) / n)
         x = (x - mean) / (std + 1e-5)
+        # The centered STFT adds frames past the valid ones; NeMo zeroes them.
+        x = mx.where(mx.arange(x.shape[1])[None, :] < valid_frames, x, 0)
     elif args.normalize == "all_features":
         x = (x - mx.mean(x)) / (mx.std(x) + 1e-5)
 
@@ -82,11 +90,18 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     window = _padded_window(args)
     x = _preemphasize(x, args)
 
+    valid_frames = None
+    if args.normalize == "per_feature":
+        # NeMo counts samples // hop frames as valid; the centered STFT adds one.
+        valid_frames = x.shape[-1] // args.hop_length
+        x = x.astype(mx.float32)
+
     x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode=args.pad_mode)
     # Power spectrum (mag_power = 2.0).
-    x = mx.square(mx.abs(x)).astype(original_dtype)
+    power_dtype = mx.float32 if valid_frames is not None else original_dtype
+    x = mx.square(mx.abs(x)).astype(power_dtype)
 
-    return _power_to_log_mel(x, args, original_dtype)
+    return _power_to_log_mel(x, args, original_dtype, valid_frames=valid_frames)
 
 
 def log_mel_spectrogram_frames(

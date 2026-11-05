@@ -1,9 +1,13 @@
-"""Nemotron 3.5 ASR (streaming, 0.6B) for MLX.
+"""Nemotron ASR (0.6B, streaming) for MLX.
 
-A cache-aware streaming FastConformer-RNNT with language-ID prompt conditioning
-(NeMo ``EncDecRNNTBPEModelWithPrompt``). Run offline, the chunked-limited attention
-mask reproduces the training-time look-ahead, so a single full-utterance pass gives
-the same result the streaming model would.
+FastConformer-RNNT models with language-ID prompt conditioning (NeMo
+``EncDecRNNTBPEModelWithPrompt``), in two streaming flavors:
+
+* Nemotron 3.5 is cache-aware. Run offline, the chunked-limited attention mask
+  reproduces the training-time look-ahead, so a single full-utterance pass gives
+  the same result the streaming model would.
+* Nemotron Unified streams buffered: each step re-encodes left context + chunk +
+  right context (see ``buffered.py``). Offline it runs with full context.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from mlx_audio.stt.utils import load_audio
 from mlx_audio.utils import from_dict
 
 from .audio import iter_log_mel_spectrogram, log_mel_spectrogram
+from .buffered import BufferedContext, BufferedEncoderState
 from .config import (
     ConformerArgs,
     JointArgs,
@@ -157,6 +162,7 @@ class Model(nn.Module):
         self.max_symbols = config.max_symbols
         self.default_language = config.default_language
         self.default_att_context_size = config.default_att_context_size
+        self.buffered = config.encoder.att_context_style == "chunked_limited_with_rc"
 
         self.encoder = Conformer(config.encoder)
         # prompt_kernel: Sequential(Linear, ReLU, Linear) — list keeps keys 0/2.
@@ -263,8 +269,12 @@ class Model(nn.Module):
         temperature=0.0,
         language=None,
         transcription_delay_ms=None,
+        att_context_size=None,
     ) -> StreamingSession:
-        """Create an independent live-input greedy transcription session."""
+        """Create an independent live-input greedy transcription session.
+
+        Unified checkpoints also take ``att_context_size=[left, chunk, right]`` in 80 ms
+        encoder frames instead of a latency, to trade accuracy for GPU time."""
         from .session import NemotronStreamingSession
 
         return NemotronStreamingSession(
@@ -272,6 +282,7 @@ class Model(nn.Module):
             temperature=temperature,
             language=language,
             transcription_delay_ms=transcription_delay_ms,
+            att_context_size=att_context_size,
         )
 
     def _prepare_audio(
@@ -290,6 +301,10 @@ class Model(nn.Module):
         """
         from .speaker_streaming import SpeakerStreamingSession
 
+        if self.buffered:
+            raise NotImplementedError(
+                "speaker-masked streaming needs a cache-aware checkpoint"
+            )
         return SpeakerStreamingSession(self, diarization_model, **kwargs)
 
     def stream_generate_speakers(self, audio, diarization_model, **kwargs):
@@ -338,12 +353,28 @@ class Model(nn.Module):
 
     # ------------------------------------------------------------------ prompt
     def _resolve_prompt_index(self, language: Optional[str]) -> int:
+        """NeMo's rule: an exact key, else a bare code that matches exactly one
+        locale key (``de`` -> ``de-DE``); anything else raises. No language
+        selects the model's default."""
+        if not self.prompt_dictionary:
+            return 0
         lang = language or self.default_language
         if lang in self.prompt_dictionary:
             return self.prompt_dictionary[lang]
-        if self.default_language in self.prompt_dictionary:
-            return self.prompt_dictionary[self.default_language]
-        return 0
+        prefix = f"{lang.lower()}-"
+        matches = sorted(
+            key for key in self.prompt_dictionary if key.lower().startswith(prefix)
+        )
+        if len(matches) == 1:
+            return self.prompt_dictionary[matches[0]]
+        if matches:
+            raise ValueError(
+                f"Language '{lang}' is ambiguous for this model: it matches {matches}"
+            )
+        raise ValueError(
+            f"Language '{lang}' is not supported by this model. Supported: "
+            + ", ".join(sorted(self.prompt_dictionary))
+        )
 
     def apply_prompt(self, encoded: mx.array, language: Optional[str]) -> mx.array:
         """Concatenate the one-hot language prompt and project back to d_model."""
@@ -415,6 +446,12 @@ class Model(nn.Module):
 
         audio_data = self._prepare_audio(audio, dtype)
 
+        if self.buffered:
+            result = self._generate_buffered(audio_data, language, att_context_size)
+            if verbose:
+                print(result.text)
+            return result
+
         if chunk_duration is None:
             mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
             result = self.decode(
@@ -448,13 +485,21 @@ class Model(nn.Module):
         dtype: mx.Dtype = mx.float32,
         **kwargs,
     ):
-        """Cache-aware streaming transcription.
+        """Streaming transcription.
 
-        Yields a cumulative ``AlignedResult`` per chunk as audio is processed, using
-        per-layer attention/conv caches and incremental subsampling (O(n), no
-        recompute). Token-identical to :meth:`generate` at the native chunk size.
+        Yields a cumulative ``AlignedResult`` per chunk as audio is processed.
+        Nemotron 3.5 streams cache-aware, with per-layer attention/conv caches and
+        incremental subsampling (O(n), no recompute), token-identical to
+        :meth:`generate` at the native chunk size. Nemotron Unified streams buffered:
+        each chunk re-encodes left context + chunk + right context
+        (``att_context_size``, in 80 ms frames), as NeMo's buffered streaming does.
         """
         audio_data = self._prepare_audio(audio, dtype)
+        if self.buffered:
+            yield from self._stream_generate_buffered(
+                audio_data, language, att_context_size
+            )
+            return
         yield from self._stream_generate_audio_data(
             audio_data,
             language=language,
@@ -488,6 +533,68 @@ class Model(nn.Module):
         )
         try:
             yield from self._decode_prompted_chunks(prompted_chunks)
+        finally:
+            mx.clear_cache()
+
+    @property
+    def compute_dtype(self) -> mx.Dtype:
+        """The weights' float dtype (a quantized layer's scales), used by Unified paths
+        for activations."""
+        out = self.encoder.pre_encode.out
+        scales = getattr(out, "scales", None)
+        dtype = (scales if scales is not None else out.weight).dtype
+        return dtype if mx.issubdtype(dtype, mx.floating) else mx.float32
+
+    # ---------------------------------------------------------------- buffered
+    # Offline, Unified runs one full-context pass up to this length, then NeMo's
+    # long-form buffered setting (10 s left, 10 s chunk, 5 s right).
+    OFFLINE_MAX_SECONDS = 60.0
+    LONG_FORM_CONTEXT = (125, 125, 62)
+
+    def _generate_buffered(self, audio_data, language, att_context_size):
+        language = language or self.default_language
+        sample_rate = self.preprocessor_config.sample_rate
+        if att_context_size is None and (
+            audio_data.shape[0] <= self.OFFLINE_MAX_SECONDS * sample_rate
+        ):
+            mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
+            lengths = mx.array(
+                [audio_data.shape[0] // self.preprocessor_config.hop_length]
+            )
+            encoded, encoded_lengths = self.encoder(
+                mel.astype(self.compute_dtype),
+                lengths=lengths,
+                att_context_size=[-1, -1, -1],
+            )
+            encoded = self.apply_prompt(encoded[:, : int(encoded_lengths[0])], language)
+            mx.eval(encoded)
+            hypothesis = GreedyDecoderState(self).decode(encoded, 0)
+            mx.clear_cache()
+            return sentences_to_result(tokens_to_sentences(hypothesis))
+        context = BufferedContext.from_att_context_size(
+            att_context_size or self.LONG_FORM_CONTEXT
+        )
+        state = BufferedEncoderState(self, context, language)
+        result = None
+        for result in self._decode_prompted_chunks(state.push(audio_data, final=True)):
+            pass
+        return result or sentences_to_result([])
+
+    def _stream_generate_buffered(self, audio_data, language, att_context_size):
+        context = BufferedContext.from_att_context_size(
+            att_context_size or self.default_att_context_size
+        )
+        state = BufferedEncoderState(self, context, language or self.default_language)
+        samples = audio_data.astype(mx.float32)
+        step = state.chunk_samples
+
+        def chunks():
+            for start in range(0, samples.size, step):
+                yield from state.push(samples[start : start + step])
+            yield from state.flush()
+
+        try:
+            yield from self._decode_prompted_chunks(chunks())
         finally:
             mx.clear_cache()
 

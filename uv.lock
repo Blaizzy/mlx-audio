@@ -1008,6 +1008,7 @@ name = "mlx-audio"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
+    { name = "jinja2" },
     { name = "miniaudio" },
     { name = "mlx" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1017,7 +1018,7 @@ dependencies = [
     { name = "sentencepiece" },
     { name = "sounddevice" },
     { name = "tqdm" },
-    { name = "transformers" },
+    { name = "transformers", extra = ["chat-template"] },
 ]
 
 [package.optional-dependencies]
@@ -1080,6 +1081,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.0.0,<3" },
     { name = "huggingface-hub", specifier = ">=1.0" },
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.13.2" },
+    { name = "jinja2", specifier = ">=3.1.6" },
     { name = "miniaudio", specifier = ">=1.71" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'all'" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'tts'" },
@@ -1104,7 +1106,7 @@ requires-dist = [
     { name = "setuptools", marker = "extra == 'sts'", specifier = "<81" },
     { name = "sounddevice", specifier = ">=0.5.3" },
     { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "transformers", specifier = ">=5.14.0" },
+    { name = "transformers", extras = ["chat-template"], specifier = ">=5.14.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'all'", specifier = ">=0.22.0" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'server'", specifier = ">=0.22.0" },
     { name = "webrtcvad", marker = "extra == 'all'", specifier = ">=2.0.10" },
@@ -2687,6 +2689,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/65/4c/70012ed0795235fb6bd7806fafd4a1842f03e49ebbfa3bb9580e451948ce/transformers-5.19.0.tar.gz", hash = "sha256:87f38dd25e4521151b97e94520ac457f44a0ae8a8358a5b112daff6c64a822d6", size = 10032022, upload-time = "2026-10-06T16:39:00.229Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/59/1e7f1212c215c73690ae6cab4678efe1555ff985953e145d88cc212859b0/transformers-5.19.0-py3-none-any.whl", hash = "sha256:afcd2dd5f603ed28c1e1fcb00a338ccbb4ef5f878ed289635df8b58187afb518", size = 12599123, upload-time = "2026-10-06T16:38:56.794Z" },
+]
+
+[package.optional-dependencies]
+chat-template = [
+    { name = "jinja2" },
 ]
 
 [[package]]
