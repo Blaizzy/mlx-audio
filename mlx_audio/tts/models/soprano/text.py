@@ -185,6 +185,7 @@ def expand_abbreviations(text: str) -> str:
 _num_prefix_re = re.compile(r"#\d")
 _num_suffix_re = re.compile(r"\b\d+(K|M|B|T)\b", re.IGNORECASE)
 _comma_number_re = re.compile(r"(\d[\d,]+\d)")
+_time_re = re.compile(r"(\d\d?:\d\d(?::\d\d)?)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
 _decimal_number_re = re.compile(r"\d+\.\d+")
@@ -204,6 +205,32 @@ def _expand_num_suffix(m):
 
 def _remove_commas(m):
     return m.group(1).replace(",", "")
+
+
+def _expand_time(m):
+    # Readings follow Soprano's reference normalizer ("3:30" -> "3 30", "9:05" ->
+    # "9 oh 5", "3:00" -> "3 o'clock"); the digits are spoken later.
+    hours, minutes, *seconds = m.group(1).split(":")
+    if not seconds:
+        if minutes == "00":
+            if int(hours) == 0:
+                return "0"
+            if int(hours) > 12:
+                return f"{hours} hundred"
+            return f"{hours} o'clock"
+        if minutes.startswith("0"):
+            minutes = f"oh {minutes[1:]}"
+        return f"{hours} {minutes}"
+    seconds = seconds[0]
+    if minutes == "00":
+        minutes = "oh oh"
+    elif minutes.startswith("0"):
+        minutes = f"oh {minutes[1:]}"
+    if seconds == "00":
+        seconds = ""
+    elif seconds.startswith("0"):
+        seconds = f"oh {seconds[1:]}"
+    return f"{hours} {minutes} {seconds}".strip()
 
 
 def _expand_dollars(m):
@@ -258,6 +285,7 @@ def normalize_numbers(text: str) -> str:
     text = re.sub(_num_prefix_re, _expand_num_prefix, text)
     text = re.sub(_num_suffix_re, _expand_num_suffix, text)
     text = re.sub(_comma_number_re, _remove_commas, text)
+    text = re.sub(_time_re, _expand_time, text)
     text = re.sub(_dollars_re, _expand_dollars, text)
     text = re.sub(_decimal_number_re, _expand_decimal_point, text)
     text = re.sub(_ordinal_re, _expand_ordinal, text)
