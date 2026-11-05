@@ -2,8 +2,7 @@
 
 Tiny randomly initialized models cover the converter config, the
 ``chunked_limited_with_rc`` mask, padding isolation, the per-feature mel and the
-buffered segmentation. Real weights are checked against NeMo's tokens in
-``test_nemotron_unified_nemo_parity.py``.
+buffered segmentation.
 """
 
 import mlx.core as mx
