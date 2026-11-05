@@ -128,7 +128,9 @@ class Model(nn.Module):
             speech = mx.random.normal((condition.shape[0], vae_dim)).astype(mx.float32)
             prev_x0 = None
             for t in self.noise_scheduler.timesteps:
-                t_batch = mx.broadcast_to(t, (speech.shape[0],))
+                # Float timesteps: the timestep embedding is cast to t's
+                # dtype, and int32 turns every cos/sin value into 0
+                t_batch = mx.broadcast_to(t.astype(mx.float32), (speech.shape[0],))
                 eps = self.prediction_head(speech, t_batch, condition=condition)
                 eps = eps.astype(mx.float32)
                 result = self.noise_scheduler.step(eps, t, speech, prev_x0=prev_x0)
@@ -149,7 +151,7 @@ class Model(nn.Module):
             # Duplicate speech for both cond/uncond branches through prediction head
             combined_speech = mx.concatenate([speech, speech], axis=0)
 
-            t_batch = mx.broadcast_to(t, (combined_speech.shape[0],))
+            t_batch = mx.broadcast_to(t.astype(mx.float32), (combined_speech.shape[0],))
             eps = self.prediction_head(
                 combined_speech, t_batch, condition=combined_condition
             )
