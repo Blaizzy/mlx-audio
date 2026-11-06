@@ -244,7 +244,8 @@ def _expand_decimal(m):
     num = m.group(0)
     parts = num.split(".")
     integer = _number_to_words(int(parts[0]))
-    decimal = " ".join(_ones[int(d)] if int(d) < 20 else str(d) for d in parts[1])
+    # _ones has no word for zero, so read each digit with _number_to_words.
+    decimal = " ".join(_number_to_words(int(d)) for d in parts[1])
     return integer + " point " + decimal
 
 
