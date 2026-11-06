@@ -151,9 +151,11 @@ _MONTH_DATE_RE = re.compile(
     r"(?P<day>\d{1,2})(?:st|nd|rd|th)?(?:,\s*|\s+)?(?P<year>\d{4})?\b",
     re.IGNORECASE,
 )
+# The whitespace before am/pm is only consumed when am/pm follows, so a bare time
+# followed by a word ("3:30 tomorrow") keeps the separating space.
 _TIME_RE = re.compile(
     r"(?<!\w)(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)"
-    r"(?::(?P<second>[0-5]\d))?\s*(?P<suffix>[aApP]\.?\s?[mM]\.?)?\b"
+    r"(?::(?P<second>[0-5]\d))?(?:\s*(?P<suffix>[aApP]\.?\s?[mM]\.?))?\b"
 )
 _MONEY_RE = re.compile(
     rf"(?<!\w)(?P<symbol>[$€£])\s*(?P<amount>{_NUMBER_PATTERN})"
