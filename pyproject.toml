@@ -27,6 +27,7 @@ dependencies = [
     "scipy>=1.10.0",
     "sentencepiece>=0.2.0",
     "sounddevice>=0.5.3",
+    "tiktoken>=0.7.0",
     "tqdm>=4.67.1",
     "transformers[chat-template]>=5.14.0",
 ]
@@ -40,6 +41,13 @@ stt = [
 # TTS dependencies
 tts = [
     "mistral-common[audio]",
+]
+
+# PyTorch checkpoint conversion helpers (IndexTTS, sortformer, etc.)
+convert = [
+    "safetensors>=0.4.0",
+    "torch>=2.2.0",
+    "pyyaml>=6.0",
 ]
 
 # Server dependencies

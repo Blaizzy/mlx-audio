@@ -84,6 +84,7 @@ nav:
       - models/tts/index.md
       - Ming-3.0 TTS Tiny: models/tts/ming3-tiny.md
       - Kokoro: models/tts/kokoro.md
+      - IndexTTS2 / 2.5: models/tts/indextts2.md
       - Qwen3-TTS: models/tts/qwen3-tts.md
       - Audio8 TTS: models/tts/audio8.md
       - Breeze TTS 2: models/tts/breeze-tts.md
