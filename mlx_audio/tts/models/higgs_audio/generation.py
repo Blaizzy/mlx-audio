@@ -140,7 +140,8 @@ def sample_audio(
 
     if top_k is not None and top_k > 0:
         # Mask logits below top-k per codebook.
-        kth = mx.sort(logits, axis=-1)[..., -top_k : -top_k + 1]
+        k = min(top_k, logits.shape[-1])
+        kth = mx.sort(logits, axis=-1)[..., -k, None]
         logits = mx.where(logits < kth, -mx.inf, logits)
 
     if top_p is not None and 0.0 < top_p < 1.0:
