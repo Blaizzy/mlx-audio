@@ -231,16 +231,23 @@ def normalize_english(text: str) -> str:
     try:
         # currently dollar only
         def process_currency(match):
-            digits = extract_all_digits(match.group(0))
-            if not digits:
-                return match.group(0)
+            dollars = int(extract_all_digits(match.group(1)))
+            cents = int(match.group(2)[:2].ljust(2, "0")) if match.group(2) else 0
+            words = []
+            if dollars or not cents:
+                words.append(
+                    f"{number_to_words(dollars)} dollar{'s' if dollars != 1 else ''}"
+                )
+            if cents:
+                words.append(
+                    f"{number_to_words(cents)} cent{'s' if cents != 1 else ''}"
+                )
+            return " ".join(words)
 
-            num = int(digits)
-            word_form = number_to_words(num)
-
-            return f"{word_form} dollar{'s' if num != 1 else ''} "
-
-        text = re.sub(r"\$\s*[0-9,.\s]+", process_currency, text).rstrip()
+        # Commas belong to the amount only when followed by more digits.
+        # The cents follow a decimal point; a period with no digits after it
+        # ends the sentence.
+        text = re.sub(r"\$\s*(\d+(?:,\d+)*)(?:\.(\d+))?", process_currency, text)
 
         def process_digits(match):
             parts = match.group(0).split()
