@@ -2378,6 +2378,24 @@ class TestSoprano(unittest.TestCase):
             clean_text("It took 1:05:09 total."), "it took one oh five oh nine total."
         )
 
+    def test_fractional_seconds(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        cases = {
+            "1:00:00.5": "one oh oh zero point five",
+            "1:05:00.5": "one oh five zero point five",
+            "00:00:00.5": "zero oh oh zero point five",
+            "1:05:01.5": "one oh five oh one point five",
+            "1:05:10.5": "one oh five ten point five",
+            "1:05:00": "one oh five",
+        }
+        for timestamp, expected in cases.items():
+            with self.subTest(timestamp=timestamp):
+                self.assertEqual(
+                    clean_text(f"It took {timestamp} total."),
+                    f"it took {expected} total.",
+                )
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations

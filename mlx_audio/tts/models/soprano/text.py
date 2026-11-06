@@ -185,7 +185,7 @@ def expand_abbreviations(text: str) -> str:
 _num_prefix_re = re.compile(r"#\d")
 _num_suffix_re = re.compile(r"\b\d+(K|M|B|T)\b", re.IGNORECASE)
 _comma_number_re = re.compile(r"(\d[\d,]+\d)")
-_time_re = re.compile(r"(\d\d?:\d\d(?::\d\d)?)")
+_time_re = re.compile(r"(\d\d?:\d\d(?::\d\d(?:\.\d+)?)?)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
 _decimal_number_re = re.compile(r"\d+\.\d+")
@@ -226,8 +226,10 @@ def _expand_time(m):
         minutes = "oh oh"
     elif minutes.startswith("0"):
         minutes = f"oh {minutes[1:]}"
-    if seconds == "00":
-        seconds = ""
+    whole_seconds, decimal_point, fraction = seconds.partition(".")
+    if whole_seconds == "00":
+        # Keep the zero before a fraction for the decimal expansion step.
+        seconds = f"0.{fraction}" if decimal_point else ""
     elif seconds.startswith("0"):
         seconds = f"oh {seconds[1:]}"
     return f"{hours} {minutes} {seconds}".strip()
