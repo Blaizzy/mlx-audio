@@ -69,3 +69,23 @@ def test_normalize_folds_curly_quotes(text, expected):
 )
 def test_dollar_amounts_read_cents_separately(text, expected):
     assert normalize(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Prices: $5,$10,$20.",
+            "Prices, five dollars,ten dollars,twenty dollars.",
+        ),
+        ("Pay $5,then leave.", "Pay five dollars,then leave."),
+        ("Pay $5, or $10.", "Pay five dollars, or ten dollars."),
+        (
+            "Prices: $1,000,$2,500.25.",
+            "Prices, one thousand dollars,"
+            "two thousand five hundred dollars twenty five cents.",
+        ),
+    ],
+)
+def test_dollar_amounts_preserve_following_commas(text, expected):
+    assert normalize(text) == expected

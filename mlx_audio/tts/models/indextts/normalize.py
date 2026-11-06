@@ -244,9 +244,10 @@ def normalize_english(text: str) -> str:
                 )
             return " ".join(words)
 
+        # Commas belong to the amount only when followed by more digits.
         # The cents follow a decimal point; a period with no digits after it
         # ends the sentence.
-        text = re.sub(r"\$\s*(\d[\d,]*)(?:\.(\d+))?", process_currency, text)
+        text = re.sub(r"\$\s*(\d+(?:,\d+)*)(?:\.(\d+))?", process_currency, text)
 
         def process_digits(match):
             parts = match.group(0).split()
