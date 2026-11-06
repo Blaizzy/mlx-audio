@@ -122,6 +122,9 @@ class _VoiceCache:
 
 
 class Model(nn.Module):
+    # The CLI passes reference files unread, so _samples resamples them.
+    preserve_ref_audio_path = True
+
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
@@ -226,10 +229,15 @@ class Model(nn.Module):
         )
 
     def _samples(self, audio: AudioInput) -> np.ndarray:
+        """Mono samples at the codec rate. Arrays must be at that rate already.
+        A file is read as fish-speech reads it: the channel mean, resampled with
+        torchaudio's default kernel. Another kernel changes the reference codes."""
         if isinstance(audio, (str, Path)):
-            from mlx_audio.utils import load_audio
+            from mlx_audio.audio_io import read
+            from mlx_audio.codec.models.higgs_audio.higgs_audio import _sinc_resample
 
-            audio = load_audio(str(audio), sample_rate=self.sample_rate)
+            audio, rate = read(str(audio), dtype="float32", always_2d=True)
+            audio = _sinc_resample(audio.mean(axis=1), rate, self.sample_rate)
         return np.asarray(audio, dtype=np.float32).reshape(-1)
 
     def _encode_audio(self, samples: np.ndarray) -> mx.array:
