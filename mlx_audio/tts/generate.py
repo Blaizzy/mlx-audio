@@ -149,7 +149,7 @@ def _model_preserves_ref_audio_paths(model: nn.Module) -> bool:
 
 
 def generate_audio(
-    text: str,
+    text: str = "",
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: Optional[int] = None,
     voice: Optional[str] = None,
@@ -215,6 +215,12 @@ def generate_audio(
     """
     try:
         play = play or stream
+        cross_lingual = kwargs.get("cross_lingual", False)
+        # Model-specific speaker-preset options are passed through as extra
+        # kwargs rather than being part of the standard generate interface.
+        add_spk = kwargs.pop("add_spk", "")
+        save_spkinfo = kwargs.pop("save_spkinfo", "")
+        load_spkinfo = kwargs.pop("load_spkinfo", "")
 
         if model is None:
             raise ValueError("Model path or model instance must be provided.")
@@ -222,6 +228,17 @@ def generate_audio(
         if isinstance(model, str):
             # Load model
             model = load_model(model_path=model)
+
+        # load speaker presets from a previously saved spk2info file
+        if load_spkinfo:
+            if not hasattr(model, "load_spkinfo"):
+                raise ValueError(
+                    f"Model {type(model).__name__} does not support spk2info "
+                    f"(no load_spkinfo method)"
+                )
+            count = model.load_spkinfo(load_spkinfo)
+            print(f"Loaded {count} speaker preset(s) from {load_spkinfo}")
+            print(f"  Speakers: {model.list_spks()}")
 
         ref_audio_values = _as_reference_list(ref_audio)
         ref_text_values = _as_reference_list(ref_text)
@@ -280,6 +297,11 @@ def generate_audio(
                 ref_text = _collapse_reference_list(ref_text_values)
             elif preserve_ref_paths:
                 ref_text = None
+            elif cross_lingual:
+                # cross_lingual mode never feeds ref_text to the LLM (see
+                # CosyVoice3.generate's cross_lingual docstring), so
+                # transcribing ref_audio here would be pointless work.
+                ref_text = None
             elif _model_accepts_ref_text(model):
                 if stt_model is None:
                     raise ValueError(
@@ -304,6 +326,22 @@ def generate_audio(
         elif ref_text_values:
             ref_text = _collapse_reference_list(ref_text_values)
 
+        # cache a zero-shot speaker preset (requires ref_audio + ref_text)
+        if add_spk:
+            if not hasattr(model, "add_zero_shot_spk"):
+                raise ValueError(
+                    f"Model {type(model).__name__} does not support spk2info "
+                    f"(no add_zero_shot_spk method)"
+                )
+            if not ref_audio or not ref_text:
+                raise ValueError(
+                    "--add_spk requires --ref_audio and --ref_text "
+                    "(or a --stt_model to transcribe ref_audio)"
+                )
+            ok = model.add_zero_shot_spk(ref_text, ref_audio, add_spk)
+            if ok:
+                print(f"Speaker '{add_spk}' cached (prompt features pre-extracted)")
+
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
 
@@ -315,12 +353,21 @@ def generate_audio(
         if instruct is not None:
             print(f"\033[94mInstruct:\033[0m {instruct}")
 
-        print(
-            f"\033[94mText:\033[0m {text}\n"
-            f"\033[94mVoice:\033[0m {voice}\n"
-            f"\033[94mSpeed:\033[0m {speed}x\n"
-            f"\033[94mLanguage:\033[0m {lang_code}"
-        )
+        # auto-detect display language from text content
+        _display_lang = lang_code
+        if _display_lang in ("en", "auto"):
+            from .models.cosyvoice3.frontend_utils import contains_chinese
+
+            _display_lang = "zh" if contains_chinese(text) else "en"
+
+        _lines = [
+            f"\033[94mText:\033[0m {text}",
+        ]
+        if voice:
+            _lines.append(f"\033[94mVoice:\033[0m {voice}")
+        _lines.append(f"\033[94mSpeed:\033[0m {speed}x")
+        _lines.append(f"\033[94mLanguage:\033[0m {_display_lang}")
+        print("\n".join(_lines))
 
         extra_kwargs = {
             key: value for key, value in kwargs.items() if value is not None
@@ -362,7 +409,10 @@ def generate_audio(
         if sigma is not None:
             gen_kwargs["sigma"] = sigma
 
-        results = model.generate(**gen_kwargs)
+        if text:
+            results = model.generate(**gen_kwargs)
+        else:
+            results = []
 
         save_streamed_audio = stream and save
         audio_list = []
@@ -457,6 +507,17 @@ def generate_audio(
         if play:
             player.wait_for_drain()
             player.stop()
+
+        # persist speaker presets to disk after generation (or after --add_spk)
+        if save_spkinfo:
+            if not hasattr(model, "save_spkinfo"):
+                raise ValueError(
+                    f"Model {type(model).__name__} does not support spk2info "
+                    f"(no save_spkinfo method)"
+                )
+            model.save_spkinfo(save_spkinfo)
+            if verbose:
+                print(f"Speaker presets saved to {save_spkinfo}")
 
     except ImportError as e:
         print(f"Import error: {e}")
@@ -621,6 +682,56 @@ def parse_args():
         help="Optional model-specific zero speaker embedding mode (e.g., Ming Omni).",
     )
     parser.add_argument(
+        "--cross_lingual",
+        action="store_true",
+        help=(
+            "Optional model-specific cross-lingual voice cloning mode (e.g. "
+            "cosyvoice3): withhold ref_text/ref_audio speech tokens from the "
+            "LLM so the first generated tokens aren't biased towards "
+            "ref_audio's language; the reference's timbre is still cloned."
+        ),
+    )
+    parser.add_argument(
+        "--spk_id",
+        type=str,
+        default="",
+        help=(
+            "Optional cached zero-shot speaker id (e.g. cosyvoice3). "
+            "When set, the model reuses previously extracted prompt features "
+            "for this speaker (saved via add_zero_shot_spk), skipping the "
+            "speech tokenizer, mel extractor, and speaker encoder."
+        ),
+    )
+    parser.add_argument(
+        "--add_spk",
+        type=str,
+        default="",
+        help=(
+            "Cache a zero-shot speaker preset under this name. Requires "
+            "--ref_audio and --ref_text (or --stt_model to transcribe). "
+            "Combine with --save_spkinfo to persist to disk."
+        ),
+    )
+    parser.add_argument(
+        "--save_spkinfo",
+        type=str,
+        default="",
+        help=(
+            "Persist cached speaker presets to a safetensors file "
+            "(e.g. speakers.safetensors). Use after --add_spk, or combine "
+            "with --spk_id to save previously loaded speakers."
+        ),
+    )
+    parser.add_argument(
+        "--load_spkinfo",
+        type=str,
+        default="",
+        help=(
+            "Load speaker presets from a safetensors file saved by "
+            "--save_spkinfo. Speakers are then available via --spk_id."
+        ),
+    )
+    parser.add_argument(
         "--top_p",
         type=float,
         default=None,
@@ -667,7 +778,10 @@ def parse_args():
         parser.error("--save requires --stream")
 
     if args.text is None:
-        if not sys.stdin.isatty():
+        # --add_spk without --text means "only cache the speaker, don't generate"
+        if args.add_spk:
+            args.text = ""
+        elif not sys.stdin.isatty():
             args.text = sys.stdin.read().strip()
         else:
             print("Please enter the text to generate:")
