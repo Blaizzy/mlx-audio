@@ -132,6 +132,7 @@ include = ["mlx_audio", "mlx_audio.*"]
 
 [tool.setuptools.package-data]
 mlx_audio = [
+    "codec/models/stepaudio2/STREAMING-LICENSE.txt",
     "tts/*.html",
     "tts/*.js",
     "tts/*.css",

@@ -12,6 +12,14 @@ Practical how-to guides for common mlx-audio workflows.
 
     [:octicons-arrow-right-24: Streaming Guide](streaming.md)
 
+-   :material-waveform:{ .lg .middle } **StepAudio2 Codec Streaming**
+
+    ---
+
+    Decode buffered speech codes with explicit flow and HiFT cache state.
+
+    [:octicons-arrow-right-24: Codec Streaming Guide](stepaudio2-streaming.md)
+
 -   :material-account-voice:{ .lg .middle } **Voice Cloning**
 
     ---
