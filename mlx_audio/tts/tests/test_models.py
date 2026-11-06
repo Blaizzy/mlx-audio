@@ -2364,6 +2364,38 @@ class TestSoprano(unittest.TestCase):
         # Bare integers are unaffected.
         self.assertEqual(normalize_numbers("I have 5 cats"), "I have five cats")
 
+    def test_times(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        # Times are spoken, not read as "three.thirty" after ":" becomes ".".
+        self.assertEqual(
+            clean_text("Meet at 3:30 tomorrow."), "meet at three thirty tomorrow."
+        )
+        self.assertEqual(clean_text("At 9:05 we eat."), "at nine oh five we eat.")
+        self.assertEqual(clean_text("At 3:00 we eat."), "at three o'clock we eat.")
+        self.assertEqual(clean_text("It is 14:00 now."), "it is fourteen hundred now.")
+        self.assertEqual(
+            clean_text("It took 1:05:09 total."), "it took one oh five oh nine total."
+        )
+
+    def test_fractional_seconds(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        cases = {
+            "1:00:00.5": "one oh oh zero point five",
+            "1:05:00.5": "one oh five zero point five",
+            "00:00:00.5": "zero oh oh zero point five",
+            "1:05:01.5": "one oh five oh one point five",
+            "1:05:10.5": "one oh five ten point five",
+            "1:05:00": "one oh five",
+        }
+        for timestamp, expected in cases.items():
+            with self.subTest(timestamp=timestamp):
+                self.assertEqual(
+                    clean_text(f"It took {timestamp} total."),
+                    f"it took {expected} total.",
+                )
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
