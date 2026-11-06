@@ -928,6 +928,113 @@ class TestQwen3TTSGenerationDefaults(unittest.TestCase):
         self.assertEqual(options.repetition_penalty, 1.1)
 
 
+class TestQwen3TTSContinuousBatchSession(unittest.TestCase):
+    @staticmethod
+    def make_model():
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        layer = dict(
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=32,
+            rms_norm_eps=1e-6,
+            rope_theta=10000.0,
+        )
+        talker = dict(
+            layer,
+            vocab_size=1100,
+            num_code_groups=2,
+            text_hidden_size=64,
+            text_vocab_size=100,
+            codec_eos_token_id=1099,
+            codec_pad_id=1098,
+            codec_bos_id=1097,
+            codec_nothink_id=1096,
+            codec_think_bos_id=1095,
+            codec_think_eos_id=1094,
+            code_predictor_config=dict(layer, vocab_size=64, num_code_groups=2),
+        )
+        config = ModelConfig.from_dict(
+            dict(
+                model_type="qwen3_tts",
+                tts_model_type="base",
+                talker_config=talker,
+                tts_pad_token_id=97,
+                tts_bos_token_id=98,
+                tts_eos_token_id=99,
+            )
+        )
+        mx.random.seed(0)
+        model = Model(config)
+        mx.eval(model.parameters())
+        model.tokenizer = SimpleNamespace(
+            encode=lambda text: [ord(c) % 90 for c in text]
+        )
+        model.speech_tokenizer = object()
+        model._decode_generated_codes = lambda codes: mx.concatenate(
+            codes, axis=0
+        ).reshape(-1)
+        return model
+
+    @staticmethod
+    def run_session(model, texts, *, add_at, cancel_at=None, max_batch_size=3):
+        from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
+
+        session = model.create_tts_batch_session(
+            TTSBatchOptions(
+                temperature=0.0,
+                top_k=0,
+                top_p=1.0,
+                repetition_penalty=1.0,
+                max_tokens=6,
+                max_batch_size=max_batch_size,
+            )
+        )
+        codes = {}
+        step = 0
+        while step == 0 or not session.idle or step <= max(add_at):
+            session.add(
+                [
+                    TTSBatchItem(sequence_id=index, text=text)
+                    for index, text in enumerate(texts)
+                    if add_at[index] == step
+                ]
+            )
+            if cancel_at and cancel_at[1] == step:
+                session.cancel(cancel_at[0])
+            for event in session.step():
+                codes[event.sequence_id] = event.audio.tolist()
+            step += 1
+        return codes
+
+    def test_rows_match_single_requests_across_admits_finishes_and_cancel(self):
+        model = self.make_model()
+        texts = [
+            "short",
+            "a much longer text for the second request",
+            "middle text",
+            "fourth",
+            "cancelled before it finishes",
+        ]
+        alone = {
+            index: self.run_session(model, [text], add_at=[0])[0]
+            for index, text in enumerate(texts)
+        }
+        for codes in alone.values():
+            self.assertEqual(len(codes), 6 * 2)
+
+        batched = self.run_session(
+            model, texts, add_at=[0, 0, 2, 7, 3], cancel_at=(4, 9)
+        )
+
+        self.assertEqual(sorted(batched), [0, 1, 2, 3])
+        for index in batched:
+            self.assertEqual(batched[index], alone[index], texts[index])
+
+
 class TestQwen3TTSMaxTokens(unittest.TestCase):
     def test_generate_with_instruct_honors_explicit_max_tokens(self):
         model = _make_generation_test_model(text_token_count=10)

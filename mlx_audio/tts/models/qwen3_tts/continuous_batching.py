@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 
-from mlx_audio.lm.models.cache import BatchKVCache, KVCache
+from mlx_audio.lm.models.cache import BatchKVCache
 from mlx_audio.tts.continuous import TTSBatchEvent, TTSBatchItem, TTSBatchOptions
 
 
@@ -25,7 +25,6 @@ class _ActiveRequest:
     text: str
     voice: Optional[str]
     instruct: Optional[str]
-    cache: List[Any]
     input_embeds: mx.array
     trailing_text_hidden: mx.array
     tts_pad_embed: mx.array
@@ -54,6 +53,7 @@ class Qwen3TTSBatchSession:
 
         self._pending: List[TTSBatchItem] = []
         self._active: List[_ActiveRequest] = []
+        self._cache: Optional[List[BatchKVCache]] = None
         self._start_time = time.time()
         self._cache_cleared = True
 
@@ -74,9 +74,14 @@ class Qwen3TTSBatchSession:
         self._pending = [
             item for item in self._pending if item.sequence_id != sequence_id
         ]
-        self._active = [
-            state for state in self._active if state.sequence_id != sequence_id
+        keep = [
+            index
+            for index, state in enumerate(self._active)
+            if state.sequence_id != sequence_id
         ]
+        if len(keep) != len(self._active):
+            self._active = [self._active[index] for index in keep]
+            self._filter_cache(keep)
         self._clear_cache_if_idle()
 
     def step(self) -> list[TTSBatchEvent]:
@@ -137,11 +142,11 @@ class Qwen3TTSBatchSession:
             code_tokens,
         )
 
-        caches_by_request = self._extract_batch_cache_rows(cache, len(pending))
         finished_cpu = finished.tolist()
         token_ids_cpu = next_token_batch[:, 0].tolist()
 
         events: list[TTSBatchEvent] = []
+        keep: list[int] = []
         for index, item in enumerate(pending):
             trailing_len = batch_inputs.trailing_lens[index]
             state = _ActiveRequest(
@@ -149,7 +154,6 @@ class Qwen3TTSBatchSession:
                 text=item.text,
                 voice=item.voice,
                 instruct=item.instruct,
-                cache=caches_by_request[index],
                 input_embeds=next_input_embeds[index : index + 1],
                 trailing_text_hidden=batch_inputs.trailing_text_hidden[
                     index : index + 1, :trailing_len, :
@@ -169,20 +173,28 @@ class Qwen3TTSBatchSession:
                 events.append(self._decode_state(state))
             else:
                 self._active.append(state)
+                keep.append(index)
 
+        if keep:
+            if len(keep) != len(pending):
+                indices = mx.array(keep)
+                for layer_cache in cache:
+                    layer_cache.filter(indices)
+            if self._cache is None:
+                self._cache = cache
+            else:
+                for layer_cache, new_cache in zip(self._cache, cache):
+                    layer_cache.extend(new_cache)
         return events
 
     def _advance_active(self) -> list[TTSBatchEvent]:
         states = list(self._active)
-        batch_size = len(states)
-        cache = self._merge_state_caches(states)
         input_embeds = mx.concatenate([state.input_embeds for state in states], axis=0)
-        attention_mask = self._attention_mask_for_states(states)
 
         logits, hidden = self.model.talker(
             input_embeds,
-            cache=cache,
-            attention_mask=attention_mask,
+            cache=self._cache,
+            attention_mask=self._attention_mask(),
         )
         next_token_batch, code_tokens, all_codes = self._sample_code_tokens(
             logits,
@@ -192,14 +204,13 @@ class Qwen3TTSBatchSession:
         finished = next_token_batch[:, 0] == self.eos_token_id
         next_input_embeds = self._next_input_embeds_for_states(states, code_tokens)
 
-        caches_by_state = self._extract_batch_cache_rows(cache, batch_size)
         finished_cpu = finished.tolist()
         token_ids_cpu = next_token_batch[:, 0].tolist()
 
         events: list[TTSBatchEvent] = []
         still_active: list[_ActiveRequest] = []
+        keep: list[int] = []
         for index, state in enumerate(states):
-            state.cache = caches_by_state[index]
             state.input_embeds = next_input_embeds[index : index + 1]
 
             if not finished_cpu[index]:
@@ -214,7 +225,10 @@ class Qwen3TTSBatchSession:
                 events.append(self._decode_state(state))
             else:
                 still_active.append(state)
+                keep.append(index)
 
+        if len(keep) != len(states):
+            self._filter_cache(keep)
         self._active = still_active
         return events
 
@@ -277,51 +291,25 @@ class Qwen3TTSBatchSession:
             text_embeds, axis=0
         ) + self.model._codec_embeds_for_tokens(code_tokens)
 
-    def _attention_mask_for_states(self, states: list[_ActiveRequest]) -> mx.array:
-        cache_lengths = [
-            (
-                state.cache[0].offset
-                if state.cache and state.cache[0].keys is not None
-                else 0
-            )
-            for state in states
-        ]
-        max_cache_len = max(cache_lengths) if cache_lengths else 0
-        mask_rows = []
-        for cache_len in cache_lengths:
-            left_pad = max_cache_len - cache_len
-            mask_rows.append(
-                mx.concatenate(
-                    [
-                        mx.zeros((1, left_pad)),
-                        mx.ones((1, cache_len + 1)),
-                    ],
-                    axis=1,
-                )
-            )
-        return mx.concatenate(mask_rows, axis=0)
+    def _attention_mask(self) -> mx.array:
+        layer_cache = self._cache[0]
+        columns = mx.arange(layer_cache.size() + 1)
+        return (columns[None, :] >= layer_cache.left_padding[:, None]).astype(
+            mx.float32
+        )
 
     def _make_batch_cache(self, left_padding: list[int]) -> list[BatchKVCache]:
         return [
             BatchKVCache(left_padding) for _ in range(self.config.num_hidden_layers)
         ]
 
-    def _merge_state_caches(self, states: list[_ActiveRequest]) -> list[BatchKVCache]:
-        return [
-            KVCache.merge([state.cache[layer_idx] for state in states])
-            for layer_idx in range(len(states[0].cache))
-        ]
-
-    def _extract_batch_cache_rows(
-        self,
-        cache: list[Any],
-        batch_size: int,
-    ) -> list[list[Any]]:
-        rows: list[list[Any]] = [[] for _ in range(batch_size)]
-        for layer_cache in cache:
-            for index in range(batch_size):
-                rows[index].append(layer_cache.extract(index))
-        return rows
+    def _filter_cache(self, keep: list[int]) -> None:
+        if not keep:
+            self._cache = None
+            return
+        indices = mx.array(keep)
+        for layer_cache in self._cache:
+            layer_cache.filter(indices)
 
     def _decode_state(self, state: _ActiveRequest) -> TTSBatchEvent:
         if not state.generated_codes:
