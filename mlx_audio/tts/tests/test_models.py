@@ -6756,6 +6756,38 @@ class TestKugelAudioModel(unittest.TestCase):
         self.assertIsNone(sched._step_index)  # pylint: disable=protected-access
         self.assertEqual(sched.lower_order_nums, 0)
 
+    def test_sample_speech_tokens_passes_float_timesteps(self):
+        """The diffusion head must get float timesteps: its sinusoidal
+        embedding is cast to t's dtype, so int32 timesteps zero it."""
+        from mlx_audio.tts.models.vibevoice.diffusion_head import (
+            DiffusionHead,
+            TimestepEmbedder,
+        )
+
+        model = self._make_model()
+        model.ddpm_inference_steps = 3
+        hidden = model.config.decoder_config.hidden_size
+        seen = []
+        original = DiffusionHead.__call__
+
+        def recording(self, noisy_images, timesteps, condition):
+            seen.append(timesteps)
+            return original(self, noisy_images, timesteps, condition)
+
+        with patch.object(DiffusionHead, "__call__", recording):
+            model.sample_speech_tokens(mx.zeros((1, hidden)))
+            model.sample_speech_tokens(
+                mx.zeros((1, hidden)),
+                cfg_scale=3.0,
+                neg_condition=mx.zeros((1, hidden)),
+            )
+
+        self.assertEqual(len(seen), 6)  # 3 steps, without and with CFG
+        for t in seen:
+            self.assertTrue(mx.issubdtype(t.dtype, mx.floating))
+            emb = TimestepEmbedder.timestep_embedding(t, 256)
+            self.assertGreater(mx.abs(emb).max().item(), 0.5)
+
 
 class TestAudioDiTModel(unittest.TestCase):
     @staticmethod
