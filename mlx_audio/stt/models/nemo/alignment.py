@@ -96,8 +96,8 @@ def merge_longest_contiguous(
 
     if len(overlap_a) < 2 or len(overlap_b) < 2:
         cutoff_time = (a_end_time + b_start_time) / 2
-        return [t for t in a if t.end <= cutoff_time] + [
-            t for t in b if t.start >= cutoff_time
+        return [t for t in a if (t.start + t.end) / 2 < cutoff_time] + [
+            t for t in b if (t.start + t.end) / 2 >= cutoff_time
         ]
 
     best_contiguous = []
@@ -175,8 +175,8 @@ def merge_longest_common_subsequence(
 
     if len(overlap_a) < 2 or len(overlap_b) < 2:
         cutoff_time = (a_end_time + b_start_time) / 2
-        return [t for t in a if t.end <= cutoff_time] + [
-            t for t in b if t.start >= cutoff_time
+        return [t for t in a if (t.start + t.end) / 2 < cutoff_time] + [
+            t for t in b if (t.start + t.end) / 2 >= cutoff_time
         ]
 
     dp = [[0 for _ in range(len(overlap_b) + 1)] for _ in range(len(overlap_a) + 1)]
@@ -213,8 +213,8 @@ def merge_longest_common_subsequence(
 
     if not lcs_pairs:
         cutoff_time = (a_end_time + b_start_time) / 2
-        return [t for t in a if t.end <= cutoff_time] + [
-            t for t in b if t.start >= cutoff_time
+        return [t for t in a if (t.start + t.end) / 2 < cutoff_time] + [
+            t for t in b if (t.start + t.end) / 2 >= cutoff_time
         ]
 
     a_start_idx = len(a) - len(overlap_a)
