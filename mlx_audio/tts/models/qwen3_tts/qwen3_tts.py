@@ -1068,7 +1068,7 @@ class Model(nn.Module):
 
         # Trim to valid length; codebook id 0 is a real code, only -1 marks padding
         valid_len = int(
-            (codes[..., 0] > -1).sum() * self.speech_tokenizer.decode_upsample_rate
+            (codes[..., 0] >= 0).sum() * self.speech_tokenizer.decode_upsample_rate
         )
         if valid_len > 0 and valid_len < audio.shape[0]:
             audio = audio[:valid_len]

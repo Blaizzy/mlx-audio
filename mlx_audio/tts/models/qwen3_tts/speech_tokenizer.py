@@ -1117,7 +1117,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
         """
         # Right padding is marked with -1, as in the reference tokenizer: codebook
         # id 0 is a real code. Count the valid frames before clamping the padding.
-        audio_lengths = (audio_codes[..., 0] > -1).sum(
+        audio_lengths = (audio_codes[..., 0] >= 0).sum(
             axis=1
         ) * self.decode_upsample_rate
 

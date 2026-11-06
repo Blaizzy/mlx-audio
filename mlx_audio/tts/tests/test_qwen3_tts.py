@@ -1233,11 +1233,15 @@ class TestQwen3TTSDecodeValidLength(unittest.TestCase):
 
     def test_frames_with_first_id_zero_are_kept(self):
         tokenizer = _make_frame_tokenizer()
-        codes = mx.array([[[3, 1], [0, 5], [7, 2], [0, 0], [2, 4]]], dtype=mx.int32)
+        for dtype in (mx.int32, mx.uint32):
+            with self.subTest(dtype=dtype):
+                codes = mx.array(
+                    [[[3, 1], [0, 5], [7, 2], [0, 0], [2, 4]]], dtype=dtype
+                )
 
-        _, lengths = tokenizer.decode(codes)
+                _, lengths = tokenizer.decode(codes)
 
-        self.assertEqual(int(lengths[0]), 5 * 4)
+                self.assertEqual(int(lengths[0]), 5 * 4)
 
     def test_negative_right_padding_is_excluded_and_clamped(self):
         tokenizer = _make_frame_tokenizer()
@@ -1257,11 +1261,13 @@ class TestQwen3TTSDecodeValidLength(unittest.TestCase):
     def test_decode_chunk_keeps_frames_with_first_id_zero(self):
         model = Model.__new__(Model)
         model.speech_tokenizer = _FrameStreamingTokenizer(upsample=4)
-        codes = mx.array([[[3, 1], [0, 5], [7, 2], [0, 0]]], dtype=mx.int32)
+        for dtype in (mx.int32, mx.uint32):
+            with self.subTest(dtype=dtype):
+                codes = mx.array([[[3, 1], [0, 5], [7, 2], [0, 0]]], dtype=dtype)
 
-        audio = model._decode_chunk(codes)
+                audio = model._decode_chunk(codes)
 
-        self.assertEqual(audio.shape[0], 4 * 4)
+                self.assertEqual(audio.shape[0], 4 * 4)
 
 
 if __name__ == "__main__":
