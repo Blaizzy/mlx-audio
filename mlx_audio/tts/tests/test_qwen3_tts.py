@@ -16,6 +16,7 @@ from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
 from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
     DecoderBlockUpsample,
     DecoderTransformer,
+    Qwen3TTSSpeechTokenizer,
 )
 
 
@@ -1189,6 +1190,84 @@ class TestQwen3TTSICLStreamingPriming(unittest.TestCase):
 
         self.assertEqual(len(decoder.step_inputs), 3)
         self.assertEqual(decoder.step_inputs[0].shape, (1, 1, 1))
+
+
+class _FrameDecoder:
+    """Decode every frame to `upsample` samples and record the codes received."""
+
+    def __init__(self, upsample: int):
+        self.upsample = upsample
+        self.inputs = []
+
+    def chunked_decode(self, codes):
+        self.inputs.append(np.array(codes))
+        return mx.ones(
+            (codes.shape[0], 1, codes.shape[2] * self.upsample), dtype=mx.float32
+        )
+
+
+class _FrameStreamingTokenizer:
+    def __init__(self, upsample: int):
+        self.decode_upsample_rate = upsample
+
+    def streaming_decode(self, codes, chunk_tokens=300):
+        yield mx.ones((1, codes.shape[1] * self.decode_upsample_rate), dtype=mx.float32)
+
+
+def _make_frame_tokenizer(upsample: int = 4):
+    tokenizer = Qwen3TTSSpeechTokenizer.__new__(Qwen3TTSSpeechTokenizer)
+    tokenizer.decoder = _FrameDecoder(upsample)
+    tokenizer.decode_upsample_rate = upsample
+    return tokenizer
+
+
+class TestQwen3TTSDecodeValidLength(unittest.TestCase):
+    """Codebook id 0 is a real code; only -1 marks right padding.
+
+    The reference tokenizer counts frames above -1 and clamps the padding before
+    decoding. Counting only ids above 0 drops one frame of audio from the end for
+    every frame whose first id is 0, anywhere in the sequence. ICL decodes the
+    reference codes with the generated ones, so such frames in a reference cut
+    the end of every take generated with it.
+    """
+
+    def test_frames_with_first_id_zero_are_kept(self):
+        tokenizer = _make_frame_tokenizer()
+        for dtype in (mx.int32, mx.uint32):
+            with self.subTest(dtype=dtype):
+                codes = mx.array(
+                    [[[3, 1], [0, 5], [7, 2], [0, 0], [2, 4]]], dtype=dtype
+                )
+
+                _, lengths = tokenizer.decode(codes)
+
+                self.assertEqual(int(lengths[0]), 5 * 4)
+
+    def test_negative_right_padding_is_excluded_and_clamped(self):
+        tokenizer = _make_frame_tokenizer()
+        codes = mx.array(
+            [
+                [[3, 1], [0, 5], [7, 2]],
+                [[0, 2], [-1, -1], [-1, -1]],
+            ],
+            dtype=mx.int32,
+        )
+
+        _, lengths = tokenizer.decode(codes)
+
+        self.assertEqual([int(n) for n in lengths], [3 * 4, 1 * 4])
+        self.assertGreaterEqual(int(tokenizer.decoder.inputs[0].min()), 0)
+
+    def test_decode_chunk_keeps_frames_with_first_id_zero(self):
+        model = Model.__new__(Model)
+        model.speech_tokenizer = _FrameStreamingTokenizer(upsample=4)
+        for dtype in (mx.int32, mx.uint32):
+            with self.subTest(dtype=dtype):
+                codes = mx.array([[[3, 1], [0, 5], [7, 2], [0, 0]]], dtype=dtype)
+
+                audio = model._decode_chunk(codes)
+
+                self.assertEqual(audio.shape[0], 4 * 4)
 
 
 if __name__ == "__main__":

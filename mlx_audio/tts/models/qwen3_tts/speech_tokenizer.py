@@ -1115,14 +1115,15 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
         Returns:
             audio: [batch, samples]
         """
-        # Transpose to [batch, num_quantizers, time]
-        codes = mx.transpose(audio_codes, (0, 2, 1))
-        wav = self.decoder.chunked_decode(codes).squeeze(1)
-
-        # Trim based on valid lengths
-        audio_lengths = (audio_codes[..., 0] > 0).sum(
+        # Right padding is marked with -1, as in the reference tokenizer: codebook
+        # id 0 is a real code. Count the valid frames before clamping the padding.
+        audio_lengths = (audio_codes[..., 0] >= 0).sum(
             axis=1
         ) * self.decode_upsample_rate
+
+        # Transpose to [batch, num_quantizers, time]
+        codes = mx.transpose(mx.maximum(audio_codes, 0), (0, 2, 1))
+        wav = self.decoder.chunked_decode(codes).squeeze(1)
 
         return wav, audio_lengths
 
