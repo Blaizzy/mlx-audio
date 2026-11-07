@@ -79,7 +79,7 @@ def apply_rotary_pos_emb(q, k, cos, sin):
 
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
+    return q_embed.astype(q.dtype), k_embed.astype(k.dtype)
 
 
 class Attention(nn.Module):
@@ -241,7 +241,7 @@ class MiniCPMModel(nn.Module):
 
         if mask is None and is_causal and L > 1:
             causal_mask = mx.triu(mx.full((L, L), float("-inf")), k=1)
-            mask = causal_mask[None, None, :, :]
+            mask = causal_mask[None, None, :, :].astype(inputs_embeds.dtype)
 
         h = inputs_embeds
         new_caches = []

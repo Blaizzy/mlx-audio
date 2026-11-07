@@ -77,6 +77,11 @@ def _trim_audio_silence_vad(
     return audio[:, new_start:new_end] if audio.ndim == 2 else audio[new_start:new_end]
 
 
+def _audio_indices(audio_mask: mx.array) -> np.ndarray:
+    mask_np = np.array(audio_mask.squeeze(0).astype(mx.float32))
+    return np.nonzero(mask_np > 0)[0]
+
+
 class Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
@@ -564,15 +569,17 @@ class Model(nn.Module):
         # Add batch dimension
         text_token = text_token[None, :]
         audio_feat = audio_feat[None, :, :, :]
-        text_mask = text_mask[None, :]
-        audio_mask = audio_mask[None, :]
-
-        # Encode audio features
-        feat_embed = self.feat_encoder(audio_feat)
-        feat_embed = self.enc_to_lm_proj(feat_embed)
 
         # Text embedding with scale
         text_embed = self.base_lm.embed_tokens(text_token) * scale_emb
+
+        dtype = text_embed.dtype
+        text_mask = text_mask[None, :].astype(dtype)
+        audio_mask = audio_mask[None, :].astype(dtype)
+
+        # Encode audio features
+        feat_embed = self.feat_encoder(audio_feat.astype(dtype))
+        feat_embed = self.enc_to_lm_proj(feat_embed)
 
         # Combine text and audio embeddings
         combined_embed = (
@@ -603,8 +610,7 @@ class Model(nn.Module):
         # Prepare continuation context for streaming
         has_continuation = audio_mask[0, -1].item() == 1.0
         if has_continuation:
-            mask_np = np.array(audio_mask.squeeze(0))
-            audio_indices = np.nonzero(mask_np > 0)[0]
+            audio_indices = _audio_indices(audio_mask)
             context_len = min(streaming_prefix_len - 1, len(audio_indices))
             last_indices = audio_indices[-context_len:]
             pred_feat_seq = [
@@ -640,7 +646,7 @@ class Model(nn.Module):
             if i >= warmup_patches:
                 pred_feat_seq.append(pred_feat[:, None, :, :])  # (B, 1, P, D)
 
-            curr_embed = self.feat_encoder(pred_feat[:, None, :, :])
+            curr_embed = self.feat_encoder(pred_feat[:, None, :, :].astype(dtype))
             curr_embed = self.enc_to_lm_proj(curr_embed)
 
             # Stop prediction (only after warmup + min_tokens of real output)
