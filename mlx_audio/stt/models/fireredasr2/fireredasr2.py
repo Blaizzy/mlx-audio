@@ -56,14 +56,14 @@ class RelPositionalEncoding(nn.Module):
         pe_positive = pe_positive[::-1].copy()
         pe_negative = pe_negative[1:]
         pe = np.concatenate([pe_positive, pe_negative], axis=0)[None, :, :]
-        self.pe = mx.array(pe)
+        self._pe = mx.array(pe)
 
     def __call__(self, x: mx.array) -> mx.array:
-        T_max = self.pe.shape[1]
+        T_max = self._pe.shape[1]
         T = x.shape[1]
         start = T_max // 2 - T + 1
         end = T_max // 2 + T
-        return self.pe[:, start:end, :]
+        return self._pe[:, start:end, :]
 
 
 class ConformerFeedForward(nn.Module):
@@ -243,10 +243,10 @@ class PositionalEncoding(nn.Module):
         )
         pe[:, 0::2] = np.sin(position * div_term)
         pe[:, 1::2] = np.cos(position * div_term)
-        self.pe = mx.array(pe[None, :, :])
+        self._pe = mx.array(pe[None, :, :])
 
     def __call__(self, length: int) -> mx.array:
-        return self.pe[:, :length, :]
+        return self._pe[:, :length, :]
 
 
 class DecoderMultiHeadAttention(nn.Module):
