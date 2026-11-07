@@ -364,12 +364,18 @@ def test_strict_load_and_quantized_roundtrip(tmp_path, quantized, features):
         )
 
 
-def test_audio_placeholder_outside_embedding_vocab_and_streaming_eos(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    "max_tokens, expected_reason",
+    [(None, "stop"), (4, "stop"), (3, "length"), (0, "length")],
+    ids=["default", "eos-on-last-step", "limit-before-eos", "zero-budget"],
+)
+@pytest.mark.parametrize("speculative", [False, True], ids=["greedy", "mtp"])
+def test_audio_placeholder_and_finish_reason(
+    tmp_path, monkeypatch, max_tokens, expected_reason, speculative
 ):
     import mlx_audio.stt.models.nemotron_transcribe.nemotron_transcribe as implementation
 
-    model = tiny_model()
+    model = tiny_model(features=speculative)
     model._tokenizer = tokenizer_fixture(tmp_path)
     tokens, embeddings = model._prepare_inputs(mx.zeros(2000), "<|audio|>", None, False)
     assert len(tokens) == len(embeddings)
@@ -378,16 +384,28 @@ def test_audio_placeholder_outside_embedding_vocab_and_streaming_eos(
 
     def generate(prompt, model, **kwargs):
         captured.update(kwargs)
-        for token in [13, 12, 14, 11, 12]:
+        for token in [13, 12, 14, 11, 12][: kwargs["max_tokens"]]:
             yield token, None
 
-    monkeypatch.setattr(implementation, "generate_step", generate)
-    result = model.generate(mx.zeros(2000), prompt="<|audio|>")
-    assert result.generation_tokens == 3
-    assert "<spk:0>" in result.text and "<ev:laugh>" in result.text
-    assert result.text.count("hello") == 1
-    stream = list(model.generate(mx.zeros(2000), prompt="<|audio|>", stream=True))
+    step = "speculative_generate_step" if speculative else "generate_step"
+    monkeypatch.setattr(implementation, step, generate)
+    options = dict(prompt="<|audio|>", speculative=speculative)
+    if max_tokens is not None:
+        options["max_tokens"] = max_tokens
+    result = model.generate(mx.zeros(2000), **options)
+    assert captured["max_tokens"] == (16384 if max_tokens is None else max_tokens)
+    assert result.finish_reason == expected_reason
+    if max_tokens == 0:
+        assert result.generation_tokens == 0
+        assert result.text == ""
+    else:
+        assert result.generation_tokens == 3
+        assert "<spk:0>" in result.text and "<ev:laugh>" in result.text
+        assert result.text.count("hello") == 1
+    stream = list(model.generate(mx.zeros(2000), stream=True, **options))
     assert stream[-1].is_final
+    assert stream[-1].finish_reason == expected_reason
+    assert all(part.finish_reason is None for part in stream[:-1])
     assert all(part.start_time is None and part.end_time is None for part in stream)
     assert "".join(r.text for r in stream).strip() == result.text
     assert captured["input_embeddings"].shape[0] == result.prompt_tokens

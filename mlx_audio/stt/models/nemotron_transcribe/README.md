@@ -57,20 +57,22 @@ Pass a Hugging Face model ID to download and load the checkpoint automatically:
 from mlx_audio.stt import load
 
 model = load("nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-4bit", strict=True)
-result = model.generate("audio.wav", max_tokens=1024)
+result = model.generate("audio.wav")
 print(result.text)
 ```
 
 ```bash
 python -m mlx_audio.stt.generate \
   --model nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-4bit \
-  --audio audio.wav --output-path transcript --format txt
+  --audio audio.wav --output-path transcript --format txt --max-tokens 16384
 ```
 
 File inputs are resampled to 16 kHz mono. Array inputs must already be mono
 16 kHz PCM. ASR preserves the spoken language by default; thinking is disabled.
 Long recordings use NVIDIA's context-extended encoder windows and persistent
 speaker cache. The full audio is encoded before text generation starts.
+The model's default output budget is 16,384 tokens. A final result with
+`finish_reason="length"` reached the token limit and may be incomplete.
 
 For runnable examples of all six tasks, synthetic audio inputs, recorded
 outputs, and an optional separate text-to-speech reply, see the
