@@ -8659,6 +8659,14 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertIn("forty two", text_normalize("42"))
         self.assertIn("three point one four", text_normalize("3.14"))
 
+    def test_text_normalize_decimal_zeros(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(
+            text_normalize("It costs 2.50 now."), "it costs two point five zero now."
+        )
+        self.assertEqual(text_normalize("1.05"), "one point zero five")
+
     def _require_g2p(self):
         try:
             import g2p_en  # noqa: F401
