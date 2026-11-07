@@ -4,6 +4,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import mlx.core as mx
 import numpy as np
@@ -93,11 +94,13 @@ class StreamingResult:
     generation_tokens: int = 0
     segments: list[dict] | None = None
     speculative_stats: dict | None = None
+    finish_reason: Literal["stop", "length"] | None = None
 
 
 @dataclass
 class TranscriptionOutput(STTOutput):
     speculative_stats: dict | None = None
+    finish_reason: Literal["stop", "length"] | None = None
 
 
 class Model(nn.Module):
@@ -346,6 +349,7 @@ class Model(nn.Module):
                 ]
             decoder = StreamingDetokenizer(self._tokenizer, skip_special_tokens=False)
             count = 0
+            finish_reason = "length"
             stats = {} if speculative else None
             generation = speculative_generate_step if speculative else generate_step
             extra = (
@@ -367,6 +371,7 @@ class Model(nn.Module):
                 **extra,
             ):
                 if token in self.config.eos_token_id:
+                    finish_reason = "stop"
                     break
                 count += 1
                 decoder.add_token(token)
@@ -398,13 +403,14 @@ class Model(nn.Module):
                 generation_tokens=count,
                 segments=segments,
                 speculative_stats=stats,
+                finish_reason=finish_reason,
             )
 
     def generate(
         self,
         audio,
         *,
-        max_tokens=1024,
+        max_tokens=16384,
         temperature=0.0,
         top_p=1.0,
         top_k=0,
@@ -429,6 +435,8 @@ class Model(nn.Module):
 
         Arrays must be mono at ``sample_rate``; file inputs are resampled.
         ``stream`` yields decoded text tokens after the complete audio is encoded.
+        The final result reports ``finish_reason`` as ``"stop"`` for EOS or
+        ``"length"`` when the ``max_tokens`` budget is exhausted.
         ``word_timestamps`` returns word segments (seconds) with speaker IDs.
         Streaming timings arrive on the final result, after CTC alignment.
         ``speculative`` enables greedy MTP decoding; ``num_draft_tokens`` controls
@@ -494,4 +502,5 @@ class Model(nn.Module):
             total_time=elapsed,
             generation_tps=result.generation_tokens / elapsed,
             speculative_stats=result.speculative_stats,
+            finish_reason=result.finish_reason,
         )
