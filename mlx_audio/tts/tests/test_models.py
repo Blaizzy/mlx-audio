@@ -8957,6 +8957,53 @@ class TestVoxCPM2Config(unittest.TestCase):
         self.assertTrue(config.dit_config.dit_mean_mode)
 
 
+class TestVoxCPM2Dtype(unittest.TestCase):
+    @staticmethod
+    def _tiny_lm_config():
+        from mlx_audio.tts.models.voxcpm2.config import LMConfig
+
+        return LMConfig(
+            hidden_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=64,
+            vocab_size=16,
+            rope_long_factor=[1.0] * 4,
+            rope_short_factor=[1.0] * 4,
+        )
+
+    def test_lm_keeps_weight_dtype_through_rotary_embedding(self):
+        from mlx_audio.tts.models.voxcpm2.minicpm import MiniCPMModel
+
+        lm = MiniCPMModel(self._tiny_lm_config())
+        lm.set_dtype(mx.bfloat16)
+        hidden, cache = lm(mx.random.normal((1, 5, 32)).astype(mx.bfloat16))
+        self.assertEqual(hidden.dtype, mx.bfloat16)
+        self.assertEqual(cache[0][0].dtype, mx.bfloat16)
+
+    def test_dit_samples_in_conditioning_dtype(self):
+        from mlx_audio.tts.models.voxcpm2.config import CFMConfig
+        from mlx_audio.tts.models.voxcpm2.dit import UnifiedCFM, VoxCPMLocDiTV2
+
+        cfm = UnifiedCFM(
+            in_channels=4,
+            cfm_params=CFMConfig(),
+            estimator=VoxCPMLocDiTV2(self._tiny_lm_config(), in_channels=4),
+        )
+        cfm.set_dtype(mx.bfloat16)
+        mu = mx.random.normal((1, 64)).astype(mx.bfloat16)
+        cond = mx.random.normal((1, 4, 2))
+        feat = cfm.sample(mu, n_timesteps=4, patch_size=2, cond=cond, cfg_value=2.0)
+        self.assertEqual(feat.dtype, mx.bfloat16)
+
+    def test_continuation_reads_a_bfloat16_audio_mask(self):
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import _audio_indices
+
+        mask = mx.array([[0, 1, 0, 1, 1]]).astype(mx.bfloat16)
+        self.assertEqual(_audio_indices(mask).tolist(), [1, 3, 4])
+
+
 class TestVoxCPM2Registration(unittest.TestCase):
     def test_model_type_in_remapping(self):
         from mlx_audio.tts.utils import MODEL_REMAPPING

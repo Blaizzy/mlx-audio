@@ -68,10 +68,10 @@ class VoxCPMLocDiTV2(nn.Module):
         cond_proj = self.cond_proj(cond)
         prefix = cond.shape[1]
 
-        t_emb = self.time_embeddings(t)
+        t_emb = self.time_embeddings(t).astype(x_proj.dtype)
         t_emb = self.time_mlp(t_emb)
 
-        dt_emb = self.time_embeddings(dt)
+        dt_emb = self.time_embeddings(dt).astype(x_proj.dtype)
         dt_emb = self.delta_time_mlp(dt_emb)
 
         t_comb = t_emb + dt_emb  # (N, H)
@@ -134,7 +134,7 @@ class UnifiedCFM(nn.Module):
                 else:
                     dt_val_in = mx.zeros((x_in.shape[0],))
 
-                cond_in = mx.concatenate([cond, cond], axis=0)
+                cond_in = mx.concatenate([cond, cond], axis=0).astype(current_x.dtype)
 
                 out = self.estimator(x_in, mu_in, t_val, cond_in, dt_val_in)
 
@@ -171,10 +171,11 @@ class UnifiedCFM(nn.Module):
         B = mu.shape[0]
         T = patch_size
 
-        z = mx.random.normal((B, self.in_channels, T)) * temperature
+        z = mx.random.normal((B, self.in_channels, T)).astype(mu.dtype) * temperature
 
         t_span = mx.linspace(1, 0, n_timesteps + 1)
         sway_coef = 1.0
         t_span = t_span + sway_coef * (mx.cos(math.pi / 2 * t_span) - 1 + t_span)
+        t_span = t_span.astype(mu.dtype)
 
         return self.solve_euler(z, t_span, mu, cond, cfg_value=cfg_value)
