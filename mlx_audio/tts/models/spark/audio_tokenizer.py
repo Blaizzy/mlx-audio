@@ -36,6 +36,8 @@ class BiCodecTokenizer:
             f"{self.model_dir}/wav2vec2-large-xlsr-53"
         )
         self.feature_extractor.config.output_hidden_states = True
+        self.model.eval()
+        self.feature_extractor.eval()
 
     def get_ref_clip(self, wav: np.ndarray) -> np.ndarray:
         """Get reference audio clip for speaker embedding."""
