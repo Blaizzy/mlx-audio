@@ -6885,6 +6885,18 @@ class TestAudioDiTModel(unittest.TestCase):
             total *= s
         self.assertEqual(total, cfg.vae_config.downsampling_ratio)
 
+    # -- text --
+
+    def test_normalize_text_replaces_quotes(self):
+        from mlx_audio.tts.models.longcat_audiodit.longcat_audiodit import (
+            _normalize_text,
+        )
+
+        self.assertEqual(
+            _normalize_text('He said "Hi" and \u201cHello\u201d, \u2018bye\u2019.'),
+            "he said hi and hello , bye .",
+        )
+
     # -- forward --
 
     def test_vae_encode_decode_shapes(self):

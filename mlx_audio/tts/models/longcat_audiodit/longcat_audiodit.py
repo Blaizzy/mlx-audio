@@ -32,7 +32,7 @@ ZH_DUR_PER_CHAR = 0.21
 
 def _normalize_text(text: str) -> str:
     text = text.lower()
-    text = re.sub(r'["""\u2018\u2019]', " ", text)
+    text = re.sub(r'["\u201c\u201d\u2018\u2019]', " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
