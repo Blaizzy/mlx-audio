@@ -27,6 +27,7 @@ from typing import (
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
+from mlx.utils import tree_flatten
 
 from mlx_audio.dsp import (
     STR_TO_WINDOW_FN,
@@ -41,6 +42,8 @@ from mlx_audio.dsp import (
 from mlx_audio.registry import model_type_from_config
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 def from_dict(data_class: Type[T], data: dict) -> T:
@@ -325,6 +328,45 @@ def get_model_class(
     return arch, model_type
 
 
+def _parameter_arrays(model) -> dict:
+    # Some model packages wrap an nn.Module without subclassing it, so rely on
+    # the same parameters() method the loader already calls.
+    parameters = getattr(model, "parameters", None)
+    if not callable(parameters):
+        return {}
+    return dict(tree_flatten(parameters()))
+
+
+def _warn_unloaded_parameters(model, missing: dict, source) -> None:
+    """Warn about parameters that non-strict loading left at their init values.
+
+    ``load_weights(strict=False)`` skips checkpoint keys that don't match the
+    module tree without saying so, so a checkpoint saved with a different
+    layout, or with a config that doesn't describe its weights, loads into a
+    model that still runs on random weights.
+
+    ``missing`` maps each parameter that loading left untouched to its initial
+    array. If the model still holds that same array, ``post_load_hook``
+    didn't fill it either.
+    """
+    current = _parameter_arrays(model)
+    unloaded = sorted(
+        name for name, value in missing.items() if current.get(name) is value
+    )
+    if not unloaded:
+        return
+    logger.warning(
+        "%d of %d parameters were not loaded from %s and keep their initial "
+        "values: %s%s. The checkpoint's weight names or config probably don't "
+        "match this model; load with strict=True to see the mismatch.",
+        len(unloaded),
+        len(current),
+        source,
+        ", ".join(unloaded[:5]),
+        ", ..." if len(unloaded) > 5 else "",
+    )
+
+
 def base_load_model(
     model_path: Union[str, Path],
     category: str,
@@ -341,7 +383,8 @@ def base_load_model(
         category: Either "tts" or "stt".
         model_remapping: Dictionary mapping model names to architecture names.
         lazy: If False, evaluate model parameters immediately.
-        strict: If True, raise an error if any weights are missing.
+        strict: If True, raise an error if any weights are missing. If False,
+            log a warning naming any parameters that were left unloaded.
         **kwargs: Additional keyword arguments (revision, force_download).
 
     Returns:
@@ -441,7 +484,18 @@ def base_load_model(
     model_quant_predicate = getattr(model, "model_quant_predicate", None)
     apply_quantization(model, config, weights, model_quant_predicate)
 
+    # Compare array identity rather than key names: some models override
+    # load_weights and drop weights whose shapes don't fit. Taken after
+    # quantization so quantized layers that receive nothing are caught too.
+    initial = {} if strict else _parameter_arrays(model)
     model.load_weights(list(weights.items()), strict=strict)
+    missing = {
+        name: value
+        for name, value in _parameter_arrays(model).items()
+        if initial.get(name) is value
+    }
+    # Release the replaced initial arrays before the loaded weights are evaluated.
+    del initial
 
     if not lazy:
         mx.eval(model.parameters())
@@ -451,6 +505,9 @@ def base_load_model(
     # Call post-load hook if the model defines one
     if hasattr(model_class.Model, "post_load_hook"):
         model = model_class.Model.post_load_hook(model, model_path)
+
+    if missing:
+        _warn_unloaded_parameters(model, missing, source_model_path)
 
     return model
 
