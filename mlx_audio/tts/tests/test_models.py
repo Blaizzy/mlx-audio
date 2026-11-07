@@ -2396,6 +2396,19 @@ class TestSoprano(unittest.TestCase):
                     f"it took {expected} total.",
                 )
 
+    def test_numbers_next_to_letters(self):
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        # A number glued to a letter is split from it before it is spoken, as in
+        # Soprano's reference normalizer, instead of becoming "tenx".
+        self.assertEqual(clean_text("It is 10x faster."), "it is ten x faster.")
+        self.assertEqual(clean_text("It is 70\u00b0F."), "it is seventy f.")
+        self.assertEqual(clean_text("Drink H2O."), "drink h two o.")
+        self.assertEqual(clean_text("Meet at 3:30pm."), "meet at three thirty pm.")
+        # Ordinals and K/M/B/T suffixes are expanded first and keep working.
+        self.assertEqual(clean_text("The 21st lap."), "the twenty first lap.")
+        self.assertEqual(clean_text("It is 10K."), "it is ten thousand.")
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
